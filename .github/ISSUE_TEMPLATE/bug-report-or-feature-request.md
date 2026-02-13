@@ -9,14 +9,13 @@ assignees: ''
 
 ### Fill out information requested in this template, without doing so issue will be ignored & closed!
 
-#### Before submitting an issue, it is strongly recommended to use the **[auto-cpufreq-genAI-chatbot](https://foolcontrol.org/?p=4903)** to get an immediate answer to your question.
 
 ### Have you tried?
 
-- [Searching through existing/closed issues](https://github.com/AdnanHodzic/auto-cpufreq/issues) to see if your bug has already been already submitted? 
-- If installation failed with [auto-cpufreq-installer](https://github.com/AdnanHodzic/auto-cpufreq/#auto-cpufreq-installer),have you tried installing auto-cpufreq using [Snap package](https://github.com/AdnanHodzic/auto-cpufreq/#snap-store)?
-- Have you tried [configuring auto-cpufreq](https://github.com/AdnanHodzic/auto-cpufreq/#configuring-auto-cpufreq)?
-- Have you tried suggestions in [troubleshooting section](https://github.com/AdnanHodzic/auto-cpufreq#troubleshooting)?
+- [Searching through existing/closed issues](https://github.com/Zamanhuseyinli/auto-cpufreq/issues) to see if your bug has already been already submitted? 
+- If installation failed with [auto-cpufreq-installer](https://github.com/Zamanhuseyinli/auto-cpufreq/#auto-cpufreq-installer),have you tried installing auto-cpufreq using [Snap package](https://github.com/Zamanhuseyinli/auto-cpufreq/#snap-store)?
+- Have you tried [configuring auto-cpufreq](https://github.com/Zamanhuseyinli/auto-cpufreq/#configuring-auto-cpufreq)?
+- Have you tried suggestions in [troubleshooting section](https://github.com/Zamanhuseyinli/auto-cpufreq#troubleshooting)?
 
 ### Error output:
 ```text

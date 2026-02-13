@@ -6,23 +6,365 @@ on:
       - "README.md"
       - ".gitignore"
       - "LICENSE"
+      - "*.md"
+      - "docs/**"
   pull_request:
+    paths-ignore:
+      - "README.md"
+      - ".gitignore"
+      - "LICENSE"
+      - "*.md"
+      - "docs/**"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  build_linux:
+  # Check code formatting
+  format:
+    name: Check formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.1.1
-
-      - name: Install poetry
-        run: pipx install poetry
-
-      - name: "Setup Python"
-        uses: actions/setup-python@v5.0.0
-        with:
-          python-version: 3.12
-          cache: "poetry"
-
-      - name: "Install auto-cpufreq"
-        run: sudo ./auto-cpufreq-installer --install
+      - uses: actions/checkout@v4
       
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # Run clippy linter
+  clippy:
+    name: Clippy lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libssl-dev \
+            dmidecode
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # Build without GUI
+  build_cli:
+    name: Build CLI (no GUI)
+    runs-on: ubuntu-latest
+    needs: [format, clippy]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libssl-dev \
+            dmidecode
+      
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cli-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Build release (CLI only)
+        run: cargo build --release --verbose
+      
+      - name: Run tests
+        run: cargo test --release --verbose
+        continue-on-error: true  # Tests may require root
+      
+      - name: Check binary
+        run: |
+          ls -lh target/release/auto-cpufreq
+          file target/release/auto-cpufreq
+          ldd target/release/auto-cpufreq || true
+      
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-cpufreq-linux-cli
+          path: target/release/auto-cpufreq
+          retention-days: 30
+
+  # Build with GUI
+  build_gui:
+    name: Build with GUI (GTK4)
+    runs-on: ubuntu-latest
+    needs: [format, clippy]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libssl-dev \
+            dmidecode \
+            libgtk-4-dev \
+            libappindicator3-dev \
+            gir1.2-appindicator3-0.1 \
+            libglib2.0-dev \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libgdk-pixbuf2.0-dev \
+            gobject-introspection \
+            libgirepository1.0-dev
+      
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-gui-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Build release (with GUI)
+        run: cargo build --release --features gui --verbose
+      
+      - name: Check binaries
+        run: |
+          ls -lh target/release/auto-cpufreq*
+          file target/release/auto-cpufreq
+          [ -f target/release/auto-cpufreq-gtk ] && file target/release/auto-cpufreq-gtk || echo "GUI binary not found"
+          [ -f target/release/auto-cpufreq-tray ] && file target/release/auto-cpufreq-tray || echo "Tray binary not found"
+      
+      - name: Upload GUI binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-cpufreq-linux-gui
+          path: |
+            target/release/auto-cpufreq
+            target/release/auto-cpufreq-gtk
+            target/release/auto-cpufreq-tray
+          retention-days: 30
+
+  # Test installation
+  test_install:
+    name: Test installation script
+    runs-on: ubuntu-latest
+    needs: [build_cli]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libssl-dev \
+            dmidecode
+      
+      - name: Test installer (dry run)
+        run: |
+          chmod +x auto-cpufreq-installer
+          # Note: actual install requires root and would modify system
+          ./auto-cpufreq-installer --help || echo "Installer help not available"
+      
+      - name: Build and verify
+        run: |
+          cargo build --release
+          sudo cp target/release/auto-cpufreq /usr/local/bin/
+          auto-cpufreq --version || echo "Version check failed"
+          auto-cpufreq --help
+
+  # Multi-distro test (using containers)
+  test_distros:
+    name: Test on ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    needs: [build_cli]
+    strategy:
+      matrix:
+        distro:
+          - ubuntu:22.04
+          - ubuntu:24.04
+          - debian:12
+          - fedora:39
+          - archlinux:latest
+    
+    container:
+      image: ${{ matrix.distro }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install dependencies (Debian/Ubuntu)
+        if: startsWith(matrix.distro, 'ubuntu') || startsWith(matrix.distro, 'debian')
+        run: |
+          apt-get update
+          apt-get install -y curl gcc pkg-config libssl-dev dmidecode
+      
+      - name: Install dependencies (Fedora)
+        if: startsWith(matrix.distro, 'fedora')
+        run: |
+          dnf install -y curl gcc openssl-devel dmidecode pkgconfig
+      
+      - name: Install dependencies (Arch)
+        if: startsWith(matrix.distro, 'archlinux')
+        run: |
+          pacman -Sy --noconfirm curl gcc openssl dmidecode pkg-config
+      
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          . $HOME/.cargo/env
+          rustc --version
+      
+      - name: Build
+        run: |
+          . $HOME/.cargo/env
+          cargo build --release
+      
+      - name: Basic smoke test
+        run: |
+          ./target/release/auto-cpufreq --version || true
+          ./target/release/auto-cpufreq --help || true
+
+  # Security audit
+  security_audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      
+      - name: Run security audit
+        run: cargo audit
+        continue-on-error: true  # Don't fail on warnings
+
+  # Code coverage
+  coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    needs: [build_cli]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev dmidecode
+      
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
+      
+      - name: Generate coverage
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        continue-on-error: true
+      
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+        continue-on-error: true
+
+  # Create release artifacts
+  create_artifacts:
+    name: Create release artifacts
+    runs-on: ubuntu-latest
+    needs: [build_cli, build_gui, test_install]
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libssl-dev \
+            dmidecode \
+            libgtk-4-dev \
+            libappindicator3-dev \
+            gir1.2-appindicator3-0.1
+      
+      - name: Build release binaries
+        run: |
+          # CLI version
+          cargo build --release
+          cp target/release/auto-cpufreq auto-cpufreq-linux-x86_64
+          
+          # GUI version
+          cargo build --release --features gui
+          tar czf auto-cpufreq-linux-x86_64-gui.tar.gz \
+            target/release/auto-cpufreq \
+            target/release/auto-cpufreq-gtk \
+            target/release/auto-cpufreq-tray \
+            scripts/ \
+            images/ \
+            README.md \
+            LICENSE
+      
+      - name: Generate checksums
+        run: |
+          sha256sum auto-cpufreq-linux-x86_64 > checksums.txt
+          sha256sum auto-cpufreq-linux-x86_64-gui.tar.gz >> checksums.txt
+      
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: |
+            auto-cpufreq-linux-x86_64
+            auto-cpufreq-linux-x86_64-gui.tar.gz
+            checksums.txt

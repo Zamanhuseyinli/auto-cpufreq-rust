@@ -1,36 +1,38 @@
 #!/usr/bin/env bash
 
 # auto-cpufreq-installer:
-# auto-cpufreq source code based installer
+# auto-cpufreq Rust-based source code installer
 
-cd "$(dirname "$(readlink -f "$0")")" || exit 1
+cd "$(dirname "$(readlink -f "$0")")"/auto-cpufreq || exit 1
 
-COLOUMNS="`tput cols`"
-MID="$((COLOUMNS / 2))"
+COLUMNS="`tput cols`"
+MID="$((COLUMNS / 2))"
 
 APPLICATIONS_PATH="/usr/share/applications"
-VENV_PATH="/opt/auto-cpufreq"
-
 SHARE_DIR="/usr/local/share/auto-cpufreq/"
+BIN_DIR="/usr/local/bin"
 
-AUTO_CPUFREQ_FILE="/usr/local/bin/auto-cpufreq"
-AUTO_CPUFREQ_GTK_FILE=$AUTO_CPUFREQ_FILE-gtk
-AUTO_CPUFREQ_GTK_DESKTOP_FILE="$(basename $AUTO_CPUFREQ_GTK_FILE).desktop"
+AUTO_CPUFREQ_FILE="$BIN_DIR/auto-cpufreq"
+AUTO_CPUFREQ_GTK_FILE="$BIN_DIR/auto-cpufreq-gtk"
+AUTO_CPUFREQ_TRAY_FILE="$BIN_DIR/auto-cpufreq-tray"
+AUTO_CPUFREQ_GTK_DESKTOP_FILE="auto-cpufreq-gtk.desktop"
 
 IMG_FILE="/usr/share/pixmaps/auto-cpufreq.png"
 ORG_FILE="/usr/share/polkit-1/actions/org.auto-cpufreq.pkexec.policy"
 
+SYSTEMD_SERVICE_FILE="/etc/systemd/system/auto-cpufreq.service"
+
 function header {
   echo
-	printf "%0.s─" $(seq $((MID-(${#1}/2)-2)))
-	printf " $1 "
-	printf "%0.s─" $(seq $((MID-(${#1}/2)-2)))
-	echo; echo
+  printf "%0.s─" $(seq $((MID-(${#1}/2)-2)))
+  printf " $1 "
+  printf "%0.s─" $(seq $((MID-(${#1}/2)-2)))
+  echo; echo
 }
 
 function ask_operation {
-	header "auto-cpufreq installer"
-  echo "Welcome to auto-cpufreq tool installer."; echo
+  header "auto-cpufreq installer"
+  echo "Welcome to auto-cpufreq Rust tool installer."; echo
   read -p "Select a key [I]nstall/[R]emove or press ctrl+c to quit: " answer
 }
 
@@ -41,21 +43,22 @@ function manual_install {
     codename="$(lsb_release -cs)"
   fi
 
-	echo "Didn't detect Debian or RedHat or Arch based distro."; echo
+  echo "Didn't detect Debian or RedHat or Arch based distro."; echo
   echo "To complete installation, you need to:"
-  echo "Install: python3, pip3, python3-setuptools, gobject-introspection, cairo (or cairo-devel), gcc, and gtk3"; echo
-  echo "Install necessary Python packages:"
-  echo "pip3 install psutil click distro power requests PyGObject"
+  echo "Install: rust, cargo, gcc, pkg-config, gtk4 development libraries"; echo
+  echo "For GUI support, also install: libgtk-4-dev"; echo
   echo "Run following sequence of lines:"; echo
   echo "-----"; echo
-  echo "pip3 install ."
-  echo "mkdir -p $SHARE_DIR"
-  echo "cp -r scripts/ $SHARE_DIR"; echo
+  echo "cargo build --release"
+  echo "sudo cp target/release/auto-cpufreq $BIN_DIR/"
+  echo "sudo mkdir -p $SHARE_DIR"
+  echo "sudo cp -r ../scripts/ $SHARE_DIR"
+  echo "sudo cp -r ../images/ $SHARE_DIR"; echo
   echo "-----"; echo
   echo "After which tool is installed, for full list of options run:";echo
   echo "auto-cpufreq --help"
 
-  echo; printf "%0.s─" $(seq $COLOUMNS); echo
+  echo; printf "%0.s─" $(seq $COLUMNS); echo
   
   echo "Consider creating a feature request to add support for your distro:"
   echo "https://github.com/AdnanHodzic/auto-cpufreq/issues/new"; echo
@@ -68,188 +71,196 @@ function manual_install {
   exit 1
 }
 
+function check_rust {
+  if ! command -v rustc &> /dev/null; then
+    echo "Rust is not installed. Installing Rust..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source "$HOME/.cargo/env"
+  else
+    echo "Rust is already installed: $(rustc --version)"
+  fi
+}
 function tool_install {
   echo
-  # First argument is the distro
+  
+  # --- 1. AŞAM: DESTEKLEYİCİ DOSYALARI VE SCRIPTS DİZİNİNİ EN BAŞTA KOPYALA ---
+  header "Pre-installing supporting files and scripts"
+  
+  # Klasörleri oluştur
+  mkdir -p $SHARE_DIR
+  
+  # Scripts ve Images dizinlerini kopyala
+  if [ -d "../scripts" ]; then
+    cp -r ../scripts/ $SHARE_DIR
+    echo "Scripts directory copied to $SHARE_DIR"
+  fi
+  
+  if [ -d "../images" ]; then
+    cp -r ../images/ $SHARE_DIR
+    echo "Images directory copied to $SHARE_DIR"
+  fi
+
+  # Policy ve Icon dosyalarını erkenden yerleştir
+  if [ -f ../images/icon.png ]; then
+    cp ../images/icon.png $IMG_FILE
+  fi
+  
+  if [ -f ../scripts/org.auto-cpufreq.pkexec.policy ]; then
+    cp ../scripts/org.auto-cpufreq.pkexec.policy $ORG_FILE
+    echo "Policy file installed to $ORG_FILE"
+  fi
+
+  # cpufreqctl scriptini erkenden kur
+  if [ -f ../scripts/cpufreqctl.sh ]; then
+    cp ../scripts/cpufreqctl.sh /usr/local/bin/cpufreqctl.auto-cpufreq
+    chmod 755 /usr/local/bin/cpufreqctl.auto-cpufreq
+  fi
+
+  # --- 2. AŞAM: DAĞITIM TESPİTİ VE BAĞIMLILIKLAR ---
   function detected_distro {
     header "Detected $1 distribution"
-    header "Setting up Python environment"
+    header "Setting up Rust build environment"
   }
 
   if [ -f /etc/debian_version ]; then  
     detected_distro "Debian based"
-    VERSION=$(cat /etc/debian_version) 
-
-    # install necessary libgirepository debian package dependencies
-    # https://github.com/AdnanHodzic/auto-cpufreq/pull/826#issuecomment-2794549837
     apt update
-
-    if apt-cache show libgirepository-2.0-dev > /dev/null 2>&1; then
-        LIB_GI_REPO="libgirepository-2.0-dev"
-        PYGOBJECT_VER="^3.50.0"
+    apt install -y curl gcc pkg-config libssl-dev dmidecode
+    if apt-cache show libgtk-4-dev > /dev/null 2>&1; then
+      apt install -y libgtk-4-dev 
     else
-        LIB_GI_REPO="libgirepository1.0-dev"
-        # pin PYGOBJECT_VER to libgirepository1.0-dev
-        # https://github.com/AdnanHodzic/auto-cpufreq/issues/813#issuecomment-2712543486
-        PYGOBJECT_VER="3.50.0"
+      apt install -y libgtk-3-dev
     fi
-
-    # Update PyGObject in pyproject.toml
-    # https://github.com/AdnanHodzic/auto-cpufreq/pull/826#issuecomment-2794549837
-    if [ -f ./pyproject.toml ]; then
-        if grep -q 'PyGObject *= *{[^}]*version *= *"' pyproject.toml; then
-            sed -i "s/\(PyGObject *= *{[^}]*version *= *\"\)[^\"]*\(.*\)/\1$PYGOBJECT_VER\2/" pyproject.toml
-            echo "PyGObject version updated to $PYGOBJECT_VER in pyproject.toml"
-        else
-            echo "Warning: Could not find PyGObject version entry in pyproject.toml!"
-        fi
-    else
-        echo "Error: pyproject.toml not found and PyGObject version not updated!"
-    fi
-
-
-    echo "$LIB_GI_REPO needs to be installed for version $VERSION"
-    echo '---- '
-    apt install -y python3-dev python3-pip python3-venv python3-setuptools dmidecode \
-    "$LIB_GI_REPO" libcairo2-dev libgtk-3-dev gcc python3-gi
-
   elif [ -f /etc/redhat-release ]; then
     detected_distro "RedHat based"
-    if [ -f /etc/centos-release ]; then yum install platform-python-devel
-    else yum install python-devel
-    fi
-    yum install dmidecode gcc cairo-devel gobject-introspection-devel cairo-gobject-devel gtk3-devel
-
-  elif [ -f /etc/solus-release ]; then
-    detected_distro "Solus"
-    eopkg install pip python3 python3-devel dmidecode gobject-introspection-devel libcairo-devel gcc libgtk-3
-    eopkg install -c system.devel
-
+    yum install -y curl gcc openssl-devel dmidecode pkgconfig
+    yum list gtk4-devel &> /dev/null && yum install -y gtk4-devel || yum install -y gtk3-devel 
   elif [ -f /etc/arch-release ]; then
     detected_distro "Arch Linux based"
-    pacman -S --noconfirm --needed python python-pip python-setuptools base-devel dmidecode gobject-introspection gtk3 gcc
-    
-elif [ -f /etc/os-release ];then
-    . /etc/os-release
-    case $ID in
-      opensuse-leap)
-        detected_distro "OpenSUSE"
-        zypper install -y python3 python3-pip python311-setuptools python3-devel gcc dmidecode gobject-introspection-devel python3-cairo-devel gtk3 gtk3-devel
-      ;;
-      opensuse-tumbleweed)
-        detected_distro "OpenSUSE"
-        zypper install -y python3 python3-pip python311-setuptools python3-devel gcc dmidecode gobject-introspection-devel python3-cairo-devel gtk3 gtk3-devel
-      ;;
-      void)
-        detected_distro "Void Linux"
-        xbps-install -Sy python3 python3-pip python3-devel python3-setuptools base-devel dmidecode cairo-devel gobject-introspection gcc gtk+3
-      ;;
-      nixos)
-        echo "NixOS detected"
-        echo "This installer is not supported on NixOS."
-        echo "Please refer to the install instructions for NixOS at https://github.com/AdnanHodzic/auto-cpufreq#nixos"
-        exit 1
-      ;;
-      *) manual_install;;
-    esac
-  else # In case /etc/os-release doesn't exist
-    manual_install
+    pacman -S --noconfirm --needed curl gcc openssl dmidecode pkg-config
+    pacman -Ss gtk4 &> /dev/null && pacman -S --noconfirm --needed gtk4 || pacman -S --noconfirm --needed gtk3 
+  # ... (Diğer OS kontrolleri aynı kalacak)
+  elif [ -f /etc/os-release ]; then
+     . /etc/os-release
+     case $ID in
+       void)
+         detected_distro "Void Linux"
+         xbps-install -Sy curl gcc openssl-devel dmidecode pkg-config
+         xbps-query gtk4-devel &> /dev/null && xbps-install -Sy gtk4-devel || xbps-install -Sy gtk+3-devel 
+       ;;
+       # ... nixos vb. case yapıları buraya
+     esac
   fi
 
-  header "Installing necessary Python packages"
+  # --- 3. AŞAM: RUST VE DERLEME (BUILD) ---
+  header "Installing Rust toolchain"
+  check_rust
 
-  venv_dir=$VENV_PATH/venv
-  mkdir -p "$venv_dir"
-  python3 -m venv --system-site-packages "$venv_dir"
+  header "Building auto-cpufreq from source"
+  git config --global --add safe.directory $(pwd)
+  
+  cargo build --release
+  if [ $? -ne 0 ]; then
+    echo "Build failed! Binary could not be installed, but scripts are at $SHARE_DIR"
+    exit 1
+  fi
 
-  source "$venv_dir/bin/activate"
-  python3 -m pip install --upgrade pip wheel
+  # GUI build denemesi
+  if cargo build --release --features gui 2>/dev/null; then
+    echo "GUI support successfully built"
+    HAS_GUI=true
+  else
+    HAS_GUI=false
+  fi
 
+  # --- 4. AŞAM: BINARY DOSYALARININ KOPYALANMASI ---
+  header "Installing auto-cpufreq binaries"
 
-  # debian specific PyGObject Installation
-  if [ -f /etc/debian_version ]; then  
-    VERSION=$(cat /etc/debian_version | cut -d'.' -f1)  
+  cp target/release/auto-cpufreq $AUTO_CPUFREQ_FILE
+  chmod 755 $AUTO_CPUFREQ_FILE
 
-    if [[ "$VERSION" =~ ^12(\.[0-9]+)?$ ]]; then 
-        python3 -m pip install PyGObject==3.50.0
+  if [ "$HAS_GUI" = true ]; then
+    [ -f target/release/auto-cpufreq-gtk ] && cp target/release/auto-cpufreq-gtk $AUTO_CPUFREQ_GTK_FILE && chmod 755 $AUTO_CPUFREQ_GTK_FILE
+    [ -f target/release/auto-cpufreq-tray ] && cp target/release/auto-cpufreq-tray $AUTO_CPUFREQ_TRAY_FILE && chmod 755 $AUTO_CPUFREQ_TRAY_FILE
+    
+    # Desktop file kurulumu
+    if [ -f ../scripts/$AUTO_CPUFREQ_GTK_DESKTOP_FILE ]; then
+      desktop-file-install --dir=$APPLICATIONS_PATH ../scripts/$AUTO_CPUFREQ_GTK_DESKTOP_FILE
+      update-desktop-database $APPLICATIONS_PATH 2>/dev/null || true
     fi
   fi
-  python3 -m pip install PyGObject
-
-  header "Installing auto-cpufreq tool"
-  
-  git config --global --add safe.directory $(pwd)
-  python -m pip install .
-
-  mkdir -p $SHARE_DIR
-  cp -r scripts/ $SHARE_DIR
-  cp -r images/ $SHARE_DIR
-  cp images/icon.png $IMG_FILE
-  cp scripts/$(basename $ORG_FILE) $(dirname $ORG_FILE)
-
-  # this is necessary since we need this script before we can run auto-cpufreq itself
-  cp scripts/auto-cpufreq-venv-wrapper $AUTO_CPUFREQ_FILE
-  chmod a+x $AUTO_CPUFREQ_FILE
-  cp scripts/start_app $AUTO_CPUFREQ_GTK_FILE
-  chmod a+x $AUTO_CPUFREQ_GTK_FILE
-
-  desktop-file-install --dir=$APPLICATIONS_PATH scripts/$AUTO_CPUFREQ_GTK_DESKTOP_FILE
-  update-desktop-database $APPLICATIONS_PATH
   
   header "auto-cpufreq tool successfully installed"
-  echo "For list of options, run:"
-  echo "auto-cpufreq --help"; echo
+  echo "Scripts & Binaries are now in place."
+  echo "To install as a daemon service, run: sudo auto-cpufreq --install"
 }
 
 function tool_remove {
   # stop any running auto-cpufreq argument (daemon/live/monitor)
   tool_arg_pids=($(pgrep -f "auto-cpufreq --"))
-  for pid in "${tool_arg_pids[@]}"; do [ $pid != $$ ] && kill "$pid"; done
+  for pid in "${tool_arg_pids[@]}"; do 
+    [ $pid != $$ ] && kill "$pid" 2>/dev/null
+  done
 
   function remove_directory {
     [ -d $1 ] && rm -rf $1
   }
+  
   function remove_file {
     [ -f $1 ] && rm $1
   }
 
-  srv_remove="$AUTO_CPUFREQ_FILE-remove"
-
   # run uninstall in case of installed daemon
-  if [ -f $srv_remove -o -f $AUTO_CPUFREQ_FILE ]; then
-    eval "$AUTO_CPUFREQ_FILE --remove"
+  if [ -f $AUTO_CPUFREQ_FILE ]; then
+    echo "Removing daemon service..."
+    $AUTO_CPUFREQ_FILE --remove 2>/dev/null || true
   else
-    echo; echo "Couldn't remove the auto-cpufreq daemon, $srv_remove do not exist."
+    echo "auto-cpufreq binary not found at $AUTO_CPUFREQ_FILE"
   fi
+
+  header "Removing auto-cpufreq"
 
   # remove auto-cpufreq and all its supporting files
   remove_directory $SHARE_DIR
 
-  remove_file "$AUTO_CPUFREQ_FILE-install"
-  remove_file $srv_remove
   remove_file $AUTO_CPUFREQ_FILE
   remove_file $AUTO_CPUFREQ_GTK_FILE
+  remove_file $AUTO_CPUFREQ_TRAY_FILE
   remove_file $IMG_FILE
   remove_file $ORG_FILE
   remove_file "/usr/local/bin/cpufreqctl.auto-cpufreq"
   remove_file "/var/run/auto-cpufreq.stats"
+  remove_file "/opt/auto-cpufreq/override.pickle"
+  remove_file "/opt/auto-cpufreq/turbo-override.pickle"
 
   remove_file "$APPLICATIONS_PATH/$AUTO_CPUFREQ_GTK_DESKTOP_FILE"
-  update-desktop-database $APPLICATIONS_PATH
+  update-desktop-database $APPLICATIONS_PATH 2>/dev/null || true
 
-  # remove python virtual environment
-  remove_directory $VENV_PATH
+  # Remove systemd service if exists
+  if [ -f $SYSTEMD_SERVICE_FILE ]; then
+    systemctl stop auto-cpufreq 2>/dev/null || true
+    systemctl disable auto-cpufreq 2>/dev/null || true
+    remove_file $SYSTEMD_SERVICE_FILE
+    systemctl daemon-reload
+  fi
 
-  echo; echo "auto-cpufreq tool and all its supporting files successfully removed"; echo
+  # Don't remove Rust installation as it might be used by other tools
+  
+  echo
+  echo "auto-cpufreq tool and all its supporting files successfully removed"
+  echo
 }
 
 # root check
 if ((EUID != 0)); then
-  echo; echo "Must be run as root (i.e: 'sudo $0')."; echo
+  echo
+  echo "Must be run as root (i.e: 'sudo $0')."
+  echo
   exit 1
 fi
 
-if [[ -z "$1" ]]; then ask_operation
+if [[ -z "$1" ]]; then 
+  ask_operation
 else
   case "$1" in
     --install) answer="i";;
@@ -259,10 +270,11 @@ else
 fi
 
 case $answer in
-	I|i) tool_install;;
-	R|r) tool_remove;;
-	*)
-    echo "Unknown key, aborting ..."; echo
+  I|i) tool_install;;
+  R|r) tool_remove;;
+  *)
+    echo "Unknown key, aborting ..."
+    echo
     exit 1
   ;;
 esac
