@@ -1,0 +1,706 @@
+// src/gui/objects.rs
+
+use gtk::{self, Box as GtkBox, Button, Label, Orientation, Revealer, RevealerTransitionType};
+use gtk::prelude::*;
+// RadioButton is not available in gtk4 crate, use Button for radio-like behavior
+#[allow(unused_imports)]
+// ...rest of file unchanged...
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::fs;
+use std::process::Command;
+use crate::core::*;
+use crate::globals::*;
+use crate::power_helper::BLUETOOTHCTL_EXISTS;
+
+
+fn auto_cpufreq_stats_path() -> &'static str {
+    if *IS_INSTALLED_WITH_SNAP {
+        "/var/snap/auto-cpufreq/current/auto-cpufreq.stats"
+    } else {
+        "/var/run/auto-cpufreq.stats"
+    }
+}
+
+pub fn get_stats() -> String {
+    fs::read_to_string(auto_cpufreq_stats_path())
+        .ok()
+        .map(|content| {
+            content
+                .lines()
+                .rev()
+                .take(50)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+pub fn get_version() -> String {
+    if *IS_INSTALLED_WITH_SNAP {
+        std::env::var("SNAP_VERSION")
+            .map(|v| format!("(Snap) {}", v))
+            .unwrap_or_else(|_| "Unknown".to_string())
+    } else if *IS_INSTALLED_WITH_AUR {
+        Command::new("pacman")
+            .args(&["-Qi", "auto-cpufreq"])
+            .output()
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|s| {
+                s.lines()
+                    .find(|line| line.contains("Version"))
+                    .map(String::from)
+            })
+            .unwrap_or_else(|| "Unknown".to_string())
+    } else {
+        get_formatted_version().unwrap_or_else(|_| "Unknown".to_string())
+    }
+}
+
+pub fn get_bluetooth_boot_status() -> Option<String> {
+    if !*BLUETOOTHCTL_EXISTS {
+        return None;
+    }
+
+    let btconf = "/etc/bluetooth/main.conf";
+    match fs::read_to_string(btconf) {
+        Ok(content) => {
+            let mut in_policy_section = false;
+            for line in content.lines() {
+                let stripped = line.trim();
+                
+                if stripped.starts_with('[') {
+                    in_policy_section = stripped.to_lowercase() == "[policy]";
+                    continue;
+                }
+                
+                if !in_policy_section || stripped.starts_with('#') || stripped.is_empty() {
+                    continue;
+                }
+                
+                if stripped.starts_with("AutoEnable=") {
+                    let value = stripped.split('=').nth(1)?.trim().to_lowercase();
+                    return Some(if value == "true" { "on" } else { "off" }.to_string());
+                }
+            }
+            Some("on".to_string())
+        }
+        Err(_) => None,
+    }
+}
+
+// RadioButtonView for Governor Override
+pub struct RadioButtonView {
+    container: GtkBox,
+    _default: Button,
+    _powersave: Button,
+    _performance: Button,
+    set_by_app: Rc<RefCell<bool>>,
+    selected: Rc<RefCell<Option<String>>>,
+}
+
+impl RadioButtonView {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Horizontal, 5);
+        container.set_hexpand(true);
+
+        let label = Label::new(Some("Governor Override"));
+        label.set_widget_name("bold");
+
+        let default = Button::with_label("Default");
+        default.set_halign(gtk::Align::End);
+        let powersave = Button::with_label("Powersave");
+        powersave.set_halign(gtk::Align::End);
+        let performance = Button::with_label("Performance");
+        performance.set_halign(gtk::Align::End);
+
+        let set_by_app = Rc::new(RefCell::new(true));
+        let selected = Rc::new(RefCell::new(Some("Default".to_string())));
+
+        // Manual radio logic: only one can be selected
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        default.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Default".to_string());
+                Self::on_button_toggled("reset");
+            }
+        });
+
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        powersave.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Powersave".to_string());
+                Self::on_button_toggled("powersave");
+            }
+        });
+
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        performance.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Performance".to_string());
+                Self::on_button_toggled("performance");
+            }
+        });
+
+        container.append(&label);
+        container.append(&default);
+        container.append(&powersave);
+        container.append(&performance);
+
+        let mut view = Self {
+            container,
+            _default: default,
+            _powersave: powersave,
+            _performance: performance,
+            set_by_app,
+            selected,
+        };
+        view.set_selected();
+        view
+    }
+
+    fn on_button_toggled(override_val: &str) {
+        let result = Command::new("pkexec")
+            .arg("auto-cpufreq")
+            .arg(format!("--force={}", override_val))
+            .status();
+
+        if let Ok(status) = result {
+            if status.code() == Some(126) || status.code() == Some(127) {
+                eprintln!("Authorization failed");
+            }
+        }
+    }
+
+    fn set_selected(&mut self) {
+        *self.set_by_app.borrow_mut() = true;
+        let state = AutoCpuFreqState::new();
+        let override_val = get_override(&state);
+        let label = match override_val {
+            GovernorOverride::Powersave => "Powersave",
+            GovernorOverride::Performance => "Performance",
+            GovernorOverride::Default => "Default",
+        };
+        *self.selected.borrow_mut() = Some(label.to_string());
+        *self.set_by_app.borrow_mut() = false;
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// CPUTurboOverride widget
+pub struct CPUTurboOverride {
+    container: GtkBox,
+    _auto: Button,
+    _never: Button,
+    _always: Button,
+    set_by_app: Rc<RefCell<bool>>,
+    selected: Rc<RefCell<Option<String>>>,
+}
+
+impl CPUTurboOverride {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Horizontal, 5);
+        container.set_hexpand(true);
+
+        let label = Label::new(Some("CPU Turbo Override"));
+        label.set_widget_name("bold");
+
+        let auto = Button::with_label("Auto");
+        auto.set_halign(gtk::Align::End);
+        let never = Button::with_label("Never");
+        never.set_halign(gtk::Align::End);
+        let always = Button::with_label("Always");
+        always.set_halign(gtk::Align::End);
+
+        let set_by_app = Rc::new(RefCell::new(true));
+        let selected = Rc::new(RefCell::new(Some("Auto".to_string())));
+
+        // Manual radio logic: only one can be selected
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        auto.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Auto".to_string());
+                Self::on_button_toggled("auto");
+            }
+        });
+
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        never.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Never".to_string());
+                Self::on_button_toggled("never");
+            }
+        });
+
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        always.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Always".to_string());
+                Self::on_button_toggled("always");
+            }
+        });
+
+        container.append(&label);
+        container.append(&auto);
+        container.append(&never);
+        container.append(&always);
+
+        let mut view = Self {
+            container,
+            _auto: auto,
+            _never: never,
+            _always: always,
+            set_by_app,
+            selected,
+        };
+        view.set_selected();
+        view
+    }
+
+    fn on_button_toggled(override_val: &str) {
+        let result = Command::new("pkexec")
+            .arg("auto-cpufreq")
+            .arg(format!("--turbo={}", override_val))
+            .status();
+
+        if let Ok(status) = result {
+            if status.code() == Some(126) || status.code() == Some(127) {
+                eprintln!("Authorization failed");
+            }
+        }
+    }
+
+    fn set_selected(&mut self) {
+        *self.set_by_app.borrow_mut() = true;
+        let state = AutoCpuFreqState::new();
+        let override_val = get_turbo_override(&state);
+        let label = match override_val {
+            TurboOverride::Auto => "Auto",
+            TurboOverride::Never => "Never",
+            TurboOverride::Always => "Always",
+        };
+        *self.selected.borrow_mut() = Some(label.to_string());
+        *self.set_by_app.borrow_mut() = false;
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// BluetoothBootControl widget
+pub struct BluetoothBootControl {
+    container: GtkBox,
+    _advanced_btn: Button,
+    _revealer: Revealer,
+    _on_btn: Button,
+    _off_btn: Button,
+    set_by_app: Rc<RefCell<bool>>,
+    selected: Rc<RefCell<Option<String>>>,
+}
+
+impl BluetoothBootControl {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Vertical, 10);
+        container.set_hexpand(true);
+
+        let advanced_btn = Button::with_label("Advanced Settings");
+        advanced_btn.set_halign(gtk::Align::Start);
+
+        let revealer = Revealer::new();
+        revealer.set_transition_type(RevealerTransitionType::SlideDown);
+        revealer.set_transition_duration(200);
+
+        let inner_box = GtkBox::new(Orientation::Horizontal, 5);
+        inner_box.set_hexpand(true);
+
+        let label = Label::new(Some("Bluetooth on Boot"));
+        label.set_widget_name("bold");
+        let on_btn = Button::with_label("On");
+        on_btn.set_halign(gtk::Align::End);
+        let off_btn = Button::with_label("Off");
+        off_btn.set_halign(gtk::Align::End);
+
+        let selected = Rc::new(RefCell::new(Some("On".to_string())));
+        let set_by_app = Rc::new(RefCell::new(true));
+
+        inner_box.append(&label);
+        inner_box.append(&on_btn);
+        inner_box.append(&off_btn);
+
+        revealer.set_child(Some(&inner_box));
+
+        container.append(&advanced_btn);
+        container.append(&revealer);
+
+        // Connect advanced button
+        let revealer_clone = revealer.clone();
+        let btn_clone = advanced_btn.clone();
+        advanced_btn.connect_clicked(move |_| {
+            let revealed = revealer_clone.reveals_child();
+            revealer_clone.set_reveal_child(!revealed);
+            if revealed {
+                btn_clone.set_label("Advanced Settings");
+            } else {
+                btn_clone.set_label("Hide Advanced Settings");
+            }
+        });
+
+        // Manual radio logic: only one can be selected
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        on_btn.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("On".to_string());
+                Self::on_button_toggled("on");
+            }
+        });
+
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        off_btn.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Off".to_string());
+                Self::on_button_toggled("off");
+            }
+        });
+
+        let mut control = Self {
+            container,
+            _advanced_btn: advanced_btn,
+            _revealer: revealer,
+            _on_btn: on_btn,
+            _off_btn: off_btn,
+            set_by_app,
+            selected,
+        };
+
+        control.set_selected();
+        control
+    }
+
+    fn on_button_toggled(action: &str) {
+        let arg = if action == "on" {
+            "--bluetooth_boot_on"
+        } else {
+            "--bluetooth_boot_off"
+        };
+
+        let result = Command::new("pkexec")
+            .arg("auto-cpufreq")
+            .arg(arg)
+            .status();
+
+        if let Ok(status) = result {
+            if status.code() == Some(126) || status.code() == Some(127) {
+                eprintln!("Authorization failed");
+            }
+        }
+    }
+
+    fn set_selected(&mut self) {
+        *self.set_by_app.borrow_mut() = true;
+        // Set the selected field based on status
+        match get_bluetooth_boot_status() {
+            Some(status) if status == "off" => *self.selected.borrow_mut() = Some("Off".to_string()),
+            _ => *self.selected.borrow_mut() = Some("On".to_string()),
+        }
+        *self.set_by_app.borrow_mut() = false;
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// CurrentGovernorBox
+#[derive(Clone)]
+pub struct CurrentGovernorBox {
+    container: GtkBox,
+    governor_label: Label,
+}
+
+impl CurrentGovernorBox {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Horizontal, 25);
+
+        let static_label = Label::new(Some("Current Governor"));
+        static_label.set_widget_name("bold");
+
+        let governor_label = Label::new(Some(""));
+        governor_label.set_halign(gtk::Align::End);
+
+        container.append(&static_label);
+        container.append(&governor_label);
+
+        let mut box_widget = Self {
+            container,
+            governor_label,
+        };
+
+        box_widget.refresh();
+        box_widget
+    }
+
+    pub fn refresh(&mut self) {
+        if let Ok(gov) = get_current_gov() {
+            self.governor_label.set_text(&gov);
+        }
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// BatteryInfoBox
+#[derive(Clone)]
+pub struct BatteryInfoBox {
+    container: GtkBox,
+    status_label: Label,
+    percentage_label: Label,
+    ac_label: Label,
+    start_threshold_label: Label,
+    stop_threshold_label: Label,
+}
+
+impl BatteryInfoBox {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Vertical, 2);
+
+        let header = Label::new(Some(&("-".repeat(20) + " Battery Stats " + &"-".repeat(20))));
+        header.set_halign(gtk::Align::Start);
+
+        let status_label = Label::new(Some(""));
+        status_label.set_halign(gtk::Align::Start);
+
+        let percentage_label = Label::new(Some(""));
+        percentage_label.set_halign(gtk::Align::Start);
+
+        let ac_label = Label::new(Some(""));
+        ac_label.set_halign(gtk::Align::Start);
+
+        let start_threshold_label = Label::new(Some(""));
+        start_threshold_label.set_halign(gtk::Align::Start);
+
+        let stop_threshold_label = Label::new(Some(""));
+        stop_threshold_label.set_halign(gtk::Align::Start);
+
+        container.append(&header);
+        container.append(&status_label);
+        container.append(&percentage_label);
+        container.append(&ac_label);
+        container.append(&start_threshold_label);
+        container.append(&stop_threshold_label);
+
+        let mut box_widget = Self {
+            container,
+            status_label,
+            percentage_label,
+            ac_label,
+            start_threshold_label,
+            stop_threshold_label,
+        };
+
+        box_widget.refresh();
+        box_widget
+    }
+
+    pub fn refresh(&mut self) {
+        // TODO: Implement actual battery info retrieval
+        // This would use the system_info module
+        self.status_label.set_text("Battery status: Unknown");
+        self.percentage_label.set_text("Battery percentage: Unknown");
+        self.ac_label.set_text("AC plugged: Unknown");
+        self.start_threshold_label.set_text("Charging start threshold: Unknown");
+        self.stop_threshold_label.set_text("Charging stop threshold: Unknown");
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// CPUFreqScalingBox
+#[derive(Clone)]
+pub struct CPUFreqScalingBox {
+    container: GtkBox,
+    governor_label: Label,
+    epp_label: Label,
+    epb_label: Label,
+}
+
+impl CPUFreqScalingBox {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Vertical, 2);
+
+        let header = Label::new(Some(&("-".repeat(20) + " CPU Frequency Scaling " + &"-".repeat(20))));
+        header.set_halign(gtk::Align::Start);
+
+        let governor_label = Label::new(Some(""));
+        governor_label.set_halign(gtk::Align::Start);
+
+        let epp_label = Label::new(Some(""));
+        epp_label.set_halign(gtk::Align::Start);
+
+        let epb_label = Label::new(Some(""));
+        epb_label.set_halign(gtk::Align::Start);
+
+        container.append(&header);
+        container.append(&governor_label);
+        container.append(&epp_label);
+        container.append(&epb_label);
+
+        let mut box_widget = Self {
+            container,
+            governor_label,
+            epp_label,
+            epb_label,
+        };
+
+        box_widget.refresh();
+        box_widget
+    }
+
+    pub fn refresh(&mut self) {
+        // TODO: Implement actual CPU freq scaling info retrieval
+        self.governor_label.set_text("Setting to use: \"Unknown\" governor");
+        self.epp_label.set_text("EPP setting: Unknown");
+        self.epb_label.set_text("");
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// SystemStatisticsBox
+#[derive(Clone)]
+pub struct SystemStatisticsBox {
+    container: GtkBox,
+    cpu_usage_label: Label,
+    load_label: Label,
+    temp_label: Label,
+    fan_label: Label,
+    load_status_label: Label,
+    usage_status_label: Label,
+    turbo_label: Label,
+}
+
+impl SystemStatisticsBox {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Vertical, 2);
+
+        let header = Label::new(Some(&("-".repeat(20) + " System Statistics " + &"-".repeat(20))));
+        header.set_halign(gtk::Align::Start);
+
+        let cpu_usage_label = Label::new(Some(""));
+        cpu_usage_label.set_halign(gtk::Align::Start);
+
+        let load_label = Label::new(Some(""));
+        load_label.set_halign(gtk::Align::Start);
+
+        let temp_label = Label::new(Some(""));
+        temp_label.set_halign(gtk::Align::Start);
+
+        let fan_label = Label::new(Some(""));
+        fan_label.set_halign(gtk::Align::Start);
+
+        let load_status_label = Label::new(Some(""));
+        load_status_label.set_halign(gtk::Align::Start);
+
+        let usage_status_label = Label::new(Some(""));
+        usage_status_label.set_halign(gtk::Align::Start);
+
+        let turbo_label = Label::new(Some(""));
+        turbo_label.set_halign(gtk::Align::Start);
+
+        container.append(&header);
+        container.append(&cpu_usage_label);
+        container.append(&load_label);
+        container.append(&temp_label);
+        container.append(&fan_label);
+        container.append(&load_status_label);
+        container.append(&usage_status_label);
+        container.append(&turbo_label);
+
+        let mut box_widget = Self {
+            container,
+            cpu_usage_label,
+            load_label,
+            temp_label,
+            fan_label,
+            load_status_label,
+            usage_status_label,
+            turbo_label,
+        };
+
+        box_widget.refresh();
+        box_widget
+    }
+
+    pub fn refresh(&mut self) {
+        // TODO: Implement actual system statistics retrieval
+        self.cpu_usage_label.set_text("Total CPU usage: Unknown");
+        self.load_label.set_text("Total system load: Unknown");
+        self.temp_label.set_text("");
+        self.fan_label.set_text("");
+        self.load_status_label.set_text("");
+        self.usage_status_label.set_text("");
+        self.turbo_label.set_text("Setting turbo boost: Unknown");
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// SystemStatsLabel
+#[derive(Clone)]
+pub struct SystemStatsLabel {
+    label: Label,
+}
+
+impl SystemStatsLabel {
+    pub fn new() -> Self {
+        let label = Label::new(Some(""));
+        label.set_halign(gtk::Align::Start);
+        label.set_valign(gtk::Align::Start);
+
+        let mut stats = Self { label };
+        stats.refresh();
+        stats
+    }
+
+    pub fn refresh(&mut self) {
+        // TODO: Capture distro_info() and sysinfo() output
+        let text = String::new();
+        
+        if let Ok(_) = distro_info() {
+            // distro info would be appended here
+        }
+        
+        if let Ok(_) = sysinfo() {
+            // sysinfo would be appended here
+        }
+
+        self.label.set_text(&text);
+    }
+
+    pub fn widget(&self) -> &Label {
+        &self.label
+    }
+}

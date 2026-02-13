@@ -1,0 +1,63 @@
+// auto-cpufreq Polkit Rules
+// Place this file in: /etc/polkit-1/rules.d/50-auto-cpufreq.rules
+//
+// This allows users in the 'wheel' or 'sudo' group to run auto-cpufreq
+// without repeated authentication prompts.
+
+polkit.addRule(function(action, subject) {
+    // Check if action is related to auto-cpufreq
+    if (action.id.match("org.auto-cpufreq.pkexec.")) {
+        
+        // Allow wheel/sudo group members with minimal prompts
+        if (subject.isInGroup("wheel") || subject.isInGroup("sudo")) {
+            
+            // Read-only operations: no authentication needed
+            if (action.id == "org.auto-cpufreq.pkexec.monitor" ||
+                action.id == "org.auto-cpufreq.pkexec.stats") {
+                return polkit.Result.YES;
+            }
+            
+            // Temporary operations: authenticate once per session
+            if (action.id == "org.auto-cpufreq.pkexec.live" ||
+                action.id == "org.auto-cpufreq.pkexec.force" ||
+                action.id == "org.auto-cpufreq.pkexec.turbo") {
+                return polkit.Result.AUTH_ADMIN_KEEP;
+            }
+            
+            // GUI operations: keep authentication
+            if (action.id == "org.auto-cpufreq.pkexec.gui" ||
+                action.id == "org.auto-cpufreq.pkexec.tray" ||
+                action.id == "org.auto-cpufreq.pkexec.run") {
+                return polkit.Result.AUTH_ADMIN_KEEP;
+            }
+            
+            // System-modifying operations: require authentication
+            if (action.id == "org.auto-cpufreq.pkexec.install" ||
+                action.id == "org.auto-cpufreq.pkexec.remove" ||
+                action.id == "org.auto-cpufreq.pkexec.bluetooth-on" ||
+                action.id == "org.auto-cpufreq.pkexec.bluetooth-off") {
+                return polkit.Result.AUTH_ADMIN_KEEP;
+            }
+            
+            // Daemon control operations
+            if (action.id.match("org.auto-cpufreq.pkexec.daemon-")) {
+                return polkit.Result.AUTH_ADMIN_KEEP;
+            }
+            
+            // Default: authenticate once and keep
+            return polkit.Result.AUTH_ADMIN_KEEP;
+        }
+    }
+    
+    // Not auto-cpufreq or not in wheel/sudo group: use defaults
+    return polkit.Result.NOT_HANDLED;
+});
+
+// Additional rule: Allow any active user to view info
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.auto-cpufreq.pkexec.monitor" ||
+         action.id == "org.auto-cpufreq.pkexec.stats") &&
+        subject.active) {
+        return polkit.Result.YES;
+    }
+});

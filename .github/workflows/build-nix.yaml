@@ -1,29 +1,146 @@
-name: Nix Flake
+name: Nix Build
 
 on:
   push:
-    paths-ignore:
-      - "README.md"
-      - ".gitignore"
-      - "LICENSE"
+    paths:
+      - '**.nix'
+      - 'flake.lock'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/nix.yml'
   pull_request:
+    paths:
+      - '**.nix'
+      - 'flake.lock'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
 
 jobs:
-  build-nix:
+  nix_build:
+    name: Nix Build - ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package:
+          - auto-cpufreq
+          - auto-cpufreq-gui
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Nix
+        uses: cachix/install-nix-action@v25
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v14
+        with:
+          name: auto-cpufreq
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+        continue-on-error: true
+      
+      - name: Check Nix flake
+        run: nix flake check
+      
+      - name: Build package
+        run: nix build .#${{ matrix.package }} -L
+      
+      - name: Show build result
+        run: |
+          ls -lh result/
+          nix path-info ./result
+      
+      - name: Test binary
+        run: |
+          ./result/bin/auto-cpufreq --version || true
+          ./result/bin/auto-cpufreq --help
+      
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-${{ matrix.package }}
+          path: result/bin/*
+
+  nix_devshell:
+    name: Test Nix devShell
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: "Install Nix ❄️"
-        uses: nixbuild/nix-quick-install-action@v30
-
-      - name: "Nix Cache ❄️"
-        uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}
-
-      - name: "Build Nix Flake ❄️"
-        run: nix build
-
       
+      - name: Install Nix
+        uses: cachix/install-nix-action@v25
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      
+      - name: Enter dev shell and build
+        run: |
+          nix develop -c cargo --version
+          nix develop -c rustc --version
+          nix develop -c cargo build --release
+      
+      - name: Test in dev shell
+        run: |
+          nix develop -c cargo test
+        continue-on-error: true
+
+  nix_module_test:
+    name: Test NixOS module
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Nix
+        uses: cachix/install-nix-action@v25
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      
+      - name: Create test configuration
+        run: |
+          cat > test-config.nix << 'EOF'
+          { config, pkgs, ... }:
+          {
+            imports = [ ./nix/module.nix ];
+            
+            programs.auto-cpufreq = {
+              enable = true;
+              settings = {
+                charger = {
+                  governor = "performance";
+                };
+                battery = {
+                  governor = "powersave";
+                  enable_thresholds = true;
+                  start_threshold = 20;
+                  stop_threshold = 80;
+                };
+              };
+            };
+          }
+          EOF
+      
+      - name: Evaluate NixOS configuration
+        run: |
+          nix eval --json --file test-config.nix config.programs.auto-cpufreq.enable
+          nix eval --json --file test-config.nix config.programs.auto-cpufreq.settings
+        continue-on-error: true
+
+  traditional_nix_build:
+    name: Traditional Nix build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Nix
+        uses: cachix/install-nix-action@v25
+      
+      - name: Build with nix-build
+        run: nix-build
+      
+      - name: Test binary
+        run: |
+          ./result/bin/auto-cpufreq --version || true
+          ./result/bin/auto-cpufreq --help

@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+
+<policyconfig>
+  <vendor>auto-cpufreq</vendor>
+  <vendor_url>https://github.com/AdnanHodzic/auto-cpufreq</vendor_url>
+  <icon_name>auto-cpufreq</icon_name>
+
+  <!-- Main auto-cpufreq execution -->
+  <action id="org.auto-cpufreq.pkexec.run">
+    <description>Run auto-cpufreq</description>
+    <message>Authentication is required to run auto-cpufreq</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/auto-cpufreq</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <!-- GTK GUI application -->
+  <action id="org.auto-cpufreq.pkexec.gui">
+    <description>Run auto-cpufreq GUI</description>
+    <message>Authentication is required to run auto-cpufreq GUI</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/auto-cpufreq-gtk</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <!-- System tray application -->
+  <action id="org.auto-cpufreq.pkexec.tray">
+    <description>Run auto-cpufreq system tray</description>
+    <message>Authentication is required to run auto-cpufreq system tray</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/auto-cpufreq-tray</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <!-- Install daemon -->
+  <action id="org.auto-cpufreq.pkexec.install">
+    <description>Install auto-cpufreq daemon</description>
+    <message>Authentication is required to install auto-cpufreq daemon</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/auto-cpufreq</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--install</annotate>
+  </action>
+
+  <!-- Remove daemon -->
+  <action id="org.auto-cpufreq.pkexec.remove">
+    <description>Remove auto-cpufreq daemon</description>
+    <message>Authentication is required to remove auto-cpufreq daemon</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/auto-cpufreq</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--remove</annotate>
+  </action>
+
+  <!-- Force governor override -->
+  <action id="org.auto-cpufreq.pkexec.force">
+    <description>Force CPU governor</description>
+    <message>Authentication is required to force CPU governor</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/auto-cpufreq</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <!-- Turbo override -->
+  <action id="org.auto-cpufreq.pkexec.turbo">
+    <description>Control CPU turbo boost</description>
+    <message>Authentication is required to control CPU turbo boost</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/auto-cpufreq</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <!-- Bluetooth control -->
+  <action id="org.auto-cpufreq.pkexec.bluetooth">
+    <description>Control Bluetooth on boot</description>
+    <message>Authentication is required to control Bluetooth on boot</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/auto-cpufreq</annotate>
+  </action>
+
+  <!-- cpufreqctl helper script -->
+  <action id="org.auto-cpufreq.pkexec.cpufreqctl">
+    <description>Run cpufreqctl helper</description>
+    <message>Authentication is required to run cpufreqctl</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/cpufreqctl.auto-cpufreq</annotate>
+  </action>
+</policyconfig>

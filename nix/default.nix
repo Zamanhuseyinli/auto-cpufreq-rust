@@ -1,92 +1,64 @@
-{
-  lib,
-  python3Packages,
-  pkgs,
-  fetchFromGitHub,
-  fetchPypi,
-}:
+{ pkgs ? import <nixpkgs> { } }:
+
 let
-
-  pyinotify = python3Packages.pyinotify.overrideAttrs (oldAttrs: {
-    src = fetchFromGitHub {
-      owner = "shadeyg56";
-      repo = "pyinotify-3.12";
-      rev = "923cebec3a2a84c7e38c9e68171eb93f5d07ce5d";
-      hash = "sha256-714CximEK4YhIqDmvqJYOUGs39gvDkWGrkNrXwxT8iM=";
-    };
-    patches = [];
-  });
-
-  requests = python3Packages.requests.overrideAttrs (oldAttrs: rec {
-    version = "2.32.4";
-    src = fetchPypi {
-      pname = "requests";
-      inherit version;
-      hash = "sha256-J9AxZoLIopg00yZIIAJLYqNpQgg9Usry8UwFkTNtNCI=";
-    };
-    patches = [];
-  });
-
+  rustPlatform = pkgs.rustPlatform;
+  lib = pkgs.lib;
 in
-python3Packages.buildPythonPackage {
-  # use pyproject.toml instead of setup.py
-  format = "pyproject";
 
+rustPlatform.buildRustPackage rec {
   pname = "auto-cpufreq";
-  version = "3.0.0";
-  src = ../.;
+  version = "2.0.0-rust";
 
-  nativeBuildInputs = with pkgs; [wrapGAppsHook3 gobject-introspection];
+  src = ./.;
 
-  buildInputs = with pkgs; [gtk3 python3Packages.poetry-core];
+  cargoLock = {
+    lockFile = ./Cargo.lock;
+  };
 
-  propagatedBuildInputs = with python3Packages; [requests pygobject3 click distro psutil setuptools poetry-dynamic-versioning pyinotify urwid pyasyncore pkgs.getent];  
-
-  doCheck = false;
-  pythonImportsCheck = ["auto_cpufreq"];
-
-  patches = [
-    # patch to prevent script copying and to disable install
-    ./patches/prevent-install-and-copy.patch
+  nativeBuildInputs = with pkgs; [
+    pkg-config
+    rustc
+    cargo
   ];
 
-  postPatch = ''
-    substituteInPlace auto_cpufreq/core.py --replace-fail '/opt/auto-cpufreq/override.pickle' /var/run/override.pickle
-    substituteInPlace scripts/org.auto-cpufreq.pkexec.policy --replace-fail "/opt/auto-cpufreq/venv/bin/auto-cpufreq" $out/bin/auto-cpufreq
+  buildInputs = with pkgs; [
+    openssl
+  ];
 
-    substituteInPlace auto_cpufreq/gui/app.py auto_cpufreq/gui/objects.py --replace-fail "/usr/local/share/auto-cpufreq/images/icon.png" $out/share/pixmaps/auto-cpufreq.png
-    substituteInPlace auto_cpufreq/gui/app.py --replace-fail "/usr/local/share/auto-cpufreq/scripts/style.css" $out/share/auto-cpufreq/scripts/style.css
-  '';
+  # Don't build GUI features by default
+  buildNoDefaultFeatures = true;
+  
+  # Tests require root access
+  doCheck = false;
 
   postInstall = ''
-    # copy script manually
-    cp scripts/cpufreqctl.sh $out/bin/cpufreqctl.auto-cpufreq
-
-    # move the css to the right place
+    # Install scripts
     mkdir -p $out/share/auto-cpufreq/scripts
-    cp scripts/style.css $out/share/auto-cpufreq/scripts/style.css
-
-    # systemd service
+    install -Dm755 scripts/cpufreqctl.sh $out/bin/cpufreqctl.auto-cpufreq
+    install -Dm644 scripts/style.css $out/share/auto-cpufreq/scripts/style.css
+    
+    # Install systemd service
     mkdir -p $out/lib/systemd/system
-    cp scripts/auto-cpufreq.service $out/lib/systemd/system
-
-    # desktop icon
-    mkdir -p $out/share/applications
-    mkdir $out/share/pixmaps
-    cp scripts/auto-cpufreq-gtk.desktop $out/share/applications
-    cp images/icon.png $out/share/pixmaps/auto-cpufreq.png
-
-    # polkit policy
+    substitute scripts/auto-cpufreq.service $out/lib/systemd/system/auto-cpufreq.service \
+      --replace "/usr/local/bin/auto-cpufreq" "$out/bin/auto-cpufreq"
+    
+    # Install images
+    mkdir -p $out/share/pixmaps
+    install -Dm644 images/icon.png $out/share/pixmaps/auto-cpufreq.png
+    
+    # Install polkit policy
     mkdir -p $out/share/polkit-1/actions
-    cp scripts/org.auto-cpufreq.pkexec.policy $out/share/polkit-1/actions
+    substitute scripts/org.auto-cpufreq.pkexec.policy \
+      $out/share/polkit-1/actions/org.auto-cpufreq.pkexec.policy \
+      --replace "/usr/local/bin/auto-cpufreq" "$out/bin/auto-cpufreq"
   '';
 
-  meta = {
-    homepage = "https://github.com/AdnanHodzic/auto-cpufreq";
+  meta = with lib; {
     description = "Automatic CPU speed & power optimizer for Linux";
-    license = lib.licenses.lgpl3Plus;
-    platforms = lib.platforms.linux;
-    maintainers = with lib.maintainers; [Technical27];
+    homepage = "https://github.com/AdnanHodzic/auto-cpufreq";
+    license = licenses.lgpl3Plus;
+    platforms = platforms.linux;
+    maintainers = [ ];
     mainProgram = "auto-cpufreq";
   };
 }
