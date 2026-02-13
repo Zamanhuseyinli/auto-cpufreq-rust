@@ -3,7 +3,7 @@
 use anyhow::Result;
 use clap::Parser;
 use auto_cpufreq::config::{CONFIG, find_config_file};
-use auto_cpufreq::core::{self, *};
+use auto_cpufreq::core::{*};
 use auto_cpufreq::globals::*;
 use auto_cpufreq::power_helper::*;
 use auto_cpufreq::battery;
