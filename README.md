@@ -253,20 +253,19 @@ services.auto-cpufreq.enable = true;
   git clone https://github.com/Zamanhuseyinli/auto-cpufreq.git
   cd auto-cpufreq/auto-cpufreq
   cargo build --release
-  cargo run auto-cpufreq --help
+  cargo run --bin auto-cpufreq -- --help
   ```
 
 - To install with GUI support:
   ```bash
   cargo build --release --features gui
-  cargo run auto-cpufreq-gtk
+  cargo run --bin auto-cpufreq-gtk
   ```
 
 - Alternatively, we can use an editable pip install for development purposes:
   ```bash
   git clone https://github.com/Zamanhuseyinli/auto-cpufreq.git
   cd auto-cpufreq
-  # set up virtual environment (details removed for brevity)
   cargo build
   target/debug/auto-cpufreq
   ```
