@@ -11,6 +11,7 @@ use gdk::Display;
 use std::cell::RefCell;
 use std::rc::Rc;
 use glib;
+use sysinfo::System; 
 
 use crate::core::*;
 use crate::globals::*;
@@ -222,40 +223,40 @@ impl ToolWindow {
         // Setup auto-refresh
         self.setup_refresh();
     }
+fn setup_refresh(&self) {
+    let system_stats = self.system_stats.clone();
+    let current_governor = self.current_governor.clone();
+    let battery_info = self.battery_info.clone();
+    let cpu_freq_scaling = self.cpu_freq_scaling.clone();
+    let system_stats_box = self.system_stats_box.clone();
 
-    fn setup_refresh(&self) {
-        let system_stats = self.system_stats.clone();
-        let current_governor = self.current_governor.clone();
-        let battery_info = self.battery_info.clone();
-        let cpu_freq_scaling = self.cpu_freq_scaling.clone();
-        let system_stats_box = self.system_stats_box.clone();
+    glib::timeout_add_seconds_local(5, move || {
+        // Her widget'ın refresh metodunda zaten sleep var, burada ekstra yapmaya gerek yok
+        
+        if let Some(ref stats) = system_stats {
+            let mut stats_mut = stats.clone();
+            stats_mut.refresh();
+        }
+        if let Some(ref gov) = current_governor {
+            let mut gov_mut = gov.clone();
+            gov_mut.refresh();
+        }
+        if let Some(ref bat) = battery_info {
+            let mut bat_mut = bat.clone();
+            bat_mut.refresh();
+        }
+        if let Some(ref freq) = cpu_freq_scaling {
+            let mut freq_mut = freq.clone();
+            freq_mut.refresh();
+        }
+        if let Some(ref stats_box) = system_stats_box {
+            let mut stats_box_mut = stats_box.clone();
+            stats_box_mut.refresh();
+        }
 
-        glib::timeout_add_seconds_local(5, move || {
-            if let Some(ref stats) = system_stats {
-                let mut stats_mut = stats.clone();
-                stats_mut.refresh();
-            }
-            if let Some(ref gov) = current_governor {
-                let mut gov_mut = gov.clone();
-                gov_mut.refresh();
-            }
-            if let Some(ref bat) = battery_info {
-                let mut bat_mut = bat.clone();
-                bat_mut.refresh();
-            }
-            if let Some(ref freq) = cpu_freq_scaling {
-                let mut freq_mut = freq.clone();
-                freq_mut.refresh();
-            }
-            if let Some(ref stats_box) = system_stats_box {
-                let mut stats_box_mut = stats_box.clone();
-                stats_box_mut.refresh();
-            }
-
-            glib::ControlFlow::Continue
-        });
-    }
-
+        glib::ControlFlow::Continue
+    });
+}
     fn install_daemon(window: &ApplicationWindow) {
         use std::process::Command;
 
@@ -443,14 +444,17 @@ impl MonitorModeView {
                 return glib::ControlFlow::Break;
             }
 
-            let report = SystemInfo::new().generate_system_report();
+            let mut sys = System::new_all();
+            let report = SystemInfo::new().generate_system_report(&mut sys);
+
             Self::update_display(&left_box, &right_box, &title, &report);
             glib::ControlFlow::Continue
         });
     }
 
-    fn refresh(&mut self) {
-        let report = SystemInfo::new().generate_system_report();
+     fn refresh(&mut self) {
+        let mut sys = System::new_all();
+        let report = SystemInfo::new().generate_system_report(&mut sys);
         Self::update_display(&self.left_box, &self.right_box, &self.title, &report);
     }
 
@@ -606,19 +610,19 @@ impl MonitorModeView {
         right_box.append(&Self::create_label(&format!("Setting turbo boost: {}", turbo_status), gtk::Align::Start));
 
         if let Some(on) = report.is_turbo_on.0 {
-            let suggested_turbo = SystemInfo::turbo_on_suggestion();
+            let mut temp_sys = System::new_all();
+            let suggested_turbo = SystemInfo::turbo_on_suggestion(&mut temp_sys);
             if suggested_turbo != on {
                 let turbo_text = if suggested_turbo { "on" } else { "off" };
                 right_box.append(&Self::create_label(&format!("Suggesting to set turbo boost: {}", turbo_text), gtk::Align::Start));
             }
         }
     }
-
-    pub fn widget(&self) -> &GtkBox {
+    pub fn widget(&self) -> &GtkBox {  
         &self.container
     }
 
-    pub fn cleanup(&self) {
+    pub fn cleanup(&self) {  
         *self.running.borrow_mut() = false;
     }
 }

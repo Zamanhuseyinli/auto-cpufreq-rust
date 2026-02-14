@@ -171,9 +171,9 @@ impl SystemInfo {
         0.0
     }
 
-    pub fn get_cpu_info() -> Vec<CoreInfo> {
-        let mut sys = System::new_all();
-        sys.refresh_cpu();
+    // System nesnesini parametre olarak alıyoruz
+    pub fn get_cpu_info(sys: &mut System) -> Vec<CoreInfo> {
+        sys.refresh_cpu();  // Her çağrıda refresh yapıyoruz
 
         let cpus = sys.cpus();
         let mut cores = Vec::new();
@@ -242,9 +242,10 @@ impl SystemInfo {
         Some(CONFIG.get(section, "energy_perf_bias", "balance_power"))
     }
 
-    pub fn cpu_usage() -> f32 {
-        let mut sys = System::new_all();
-        sys.refresh_cpu();
+    // System nesnesini parametre olarak alıyoruz
+    pub fn cpu_usage(sys: &mut System) -> f32 {
+        sys.refresh_cpu();  // Her çağrıda refresh yapıyoruz
+        
         let cpus = sys.cpus();
         if cpus.is_empty() {
             return 0.0;
@@ -275,8 +276,14 @@ impl SystemInfo {
         None
     }
 
-    pub fn avg_temp() -> i32 {
-        let temps: Vec<f32> = Self::get_cpu_info().iter().map(|c| c.temperature).filter(|&t| t > 0.0).collect();
+    // avg_temp artık System parametresi alıyor
+    pub fn avg_temp(sys: &mut System) -> i32 {
+        let temps: Vec<f32> = Self::get_cpu_info(sys)
+            .iter()
+            .map(|c| c.temperature)
+            .filter(|&t| t > 0.0)
+            .collect();
+        
         if temps.is_empty() { 
             0 
         } else { 
@@ -405,10 +412,11 @@ impl SystemInfo {
         }
     }
 
-    pub fn turbo_on_suggestion() -> bool {
-        let usage = Self::cpu_usage();
+    // turbo_on_suggestion artık System parametresi alıyor
+    pub fn turbo_on_suggestion(sys: &mut System) -> bool {
+        let usage = Self::cpu_usage(sys);
         if usage >= 20.0 { return true; }
-        if usage <= 25.0 && Self::avg_temp() as f32 >= 70.0 { return false; }
+        if usage <= 25.0 && Self::avg_temp(sys) as f32 >= 70.0 { return false; }
         false
     }
 
@@ -421,9 +429,10 @@ impl SystemInfo {
         }
     }
 
-    pub fn generate_system_report(&self) -> SystemReport {
+    // System nesnesini parametre olarak alıyoruz
+    pub fn generate_system_report(&self, sys: &mut System) -> SystemReport {
         let battery = Self::battery_info();
-        let cores = Self::get_cpu_info();
+        let cores = Self::get_cpu_info(sys);
 
         SystemReport {
             distro_name: self.distro_name.clone(),
@@ -437,7 +446,7 @@ impl SystemInfo {
             current_epb: battery.is_ac_plugged.and_then(|ac| Self::current_epb(ac)),
             cpu_driver: self.cpu_driver.clone(),
             cpu_fan_speed: Self::cpu_fan_speed(),
-            cpu_usage: Self::cpu_usage(),
+            cpu_usage: Self::cpu_usage(sys),
             cpu_max_freq: Self::cpu_max_freq(),
             cpu_min_freq: Self::cpu_min_freq(),
             load: Self::system_load(),
@@ -456,6 +465,7 @@ mod tests {
     #[test]
     fn smoke() {
         let s = SystemInfo::new();
-        let _ = s.generate_system_report();
+        let mut sys = System::new_all();
+        let _ = s.generate_system_report(&mut sys);
     }
 }

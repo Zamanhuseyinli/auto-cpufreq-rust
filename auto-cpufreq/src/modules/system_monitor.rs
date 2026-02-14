@@ -2,6 +2,8 @@
 use std::thread;
 use std::time::Duration;
 
+use sysinfo::System;
+
 use crate::modules::system_info::{SystemInfo, SystemReport};
 
 #[derive(Debug, Clone, Copy)]
@@ -26,16 +28,26 @@ pub struct SystemMonitor {
     pub suggestion: bool,
     pub left: Vec<String>,
     pub right: Vec<String>,
+    sys: System,  // System nesnesini tutuyoruz
 }
 
 impl SystemMonitor {
     pub fn new(view: ViewType, suggestion: bool) -> Self {
-        Self { view, suggestion, left: Vec::new(), right: Vec::new() }
+        let mut sys = System::new_all();
+        sys.refresh_cpu();  // İlk refresh
+        
+        Self { 
+            view, 
+            suggestion, 
+            left: Vec::new(), 
+            right: Vec::new(),
+            sys,
+        }
     }
 
     pub fn update(&mut self) {
-        let sys = SystemInfo::new();
-        let report = sys.generate_system_report();
+        let sys_info = SystemInfo::new();
+        let report = sys_info.generate_system_report(&mut self.sys);
         self.format_system_info(&report);
     }
 
@@ -136,15 +148,14 @@ impl SystemMonitor {
             _ => "Unknown".into(),
         };
         self.right.push(format!("Setting turbo boost: {}", turbo_status));
-
-        if self.suggestion {
-            if let Some(on) = report.is_turbo_on.0 {
-                let sugg = crate::modules::system_info::SystemInfo::turbo_on_suggestion();
-                if sugg != on {
-                    self.right.push(format!("Suggesting to set turbo boost: {}", if sugg { "on" } else { "off" }));
-                }
-            }
+   if self.suggestion {
+      if let Some(on) = report.is_turbo_on.0 {
+        let sugg = crate::modules::system_info::SystemInfo::turbo_on_suggestion(&mut self.sys);  // ✅ self.sys ekle
+        if sugg != on {
+            self.right.push(format!("Suggesting to set turbo boost: {}", if sugg { "on" } else { "off" }));
         }
+    }
+}
     }
 
     /// Simple blocking run that prints the formatted columns to stdout every 2s.

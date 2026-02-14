@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::fs;
 use std::process::Command;
+use sysinfo::System; 
 use crate::core::*;
 use crate::globals::*;
 use crate::power_helper::BLUETOOTHCTL_EXISTS;
@@ -545,6 +546,7 @@ impl CurrentGovernorBox {
 }
 
 // BatteryInfoBox
+// BatteryInfoBox
 #[derive(Clone)]
 pub struct BatteryInfoBox {
     container: GtkBox,
@@ -670,7 +672,10 @@ impl CPUFreqScalingBox {
     }
 
     pub fn refresh(&mut self) {
-        let report = SystemInfo::new().generate_system_report();
+        let mut sys = System::new_all();
+        sys.refresh_cpu();  
+        
+        let report = SystemInfo::new().generate_system_report(&mut sys);
 
         let gov = report.current_gov.unwrap_or_else(|| "Unknown".to_string());
         self.governor_label.set_text(&format!("Setting to use: \"{}\" governor", gov));
@@ -762,7 +767,11 @@ impl SystemStatisticsBox {
     }
 
     pub fn refresh(&mut self) {
-        let report = SystemInfo::new().generate_system_report();
+        let mut sys = System::new_all();
+        sys.refresh_cpu();  
+        
+        
+        let report = SystemInfo::new().generate_system_report(&mut sys);
 
         self.cpu_usage_label.set_text(&format!("Total CPU usage: {:.1} %", report.cpu_usage));
         self.load_label.set_text(&format!("Total system load: {:.2}", report.load));
@@ -839,16 +848,20 @@ impl SystemStatsLabel {
     }
 
     pub fn refresh(&mut self) {
-        let sys = SystemInfo::new();
+        let sys_info = SystemInfo::new();
+        let mut sys = System::new_all();
+        sys.refresh_cpu();  
+         
+        
         let mut text = String::new();
         
         text.push_str("System Information\n\n");
-        text.push_str(&format!("Linux distro: {} {}\n", sys.distro_name, sys.distro_version));
-        text.push_str(&format!("Linux kernel: {}\n", sys.kernel_version));
-        text.push_str(&format!("Processor: {}\n", sys.processor_model));
-        text.push_str(&format!("Cores: {}\n", sys.total_cores.map_or("Unknown".to_string(), |c| c.to_string())));
-        text.push_str(&format!("Architecture: {}\n", sys.architecture));
-        text.push_str(&format!("Driver: {}\n\n", sys.cpu_driver.as_deref().unwrap_or("Unknown")));
+        text.push_str(&format!("Linux distro: {} {}\n", sys_info.distro_name, sys_info.distro_version));
+        text.push_str(&format!("Linux kernel: {}\n", sys_info.kernel_version));
+        text.push_str(&format!("Processor: {}\n", sys_info.processor_model));
+        text.push_str(&format!("Cores: {}\n", sys_info.total_cores.map_or("Unknown".to_string(), |c| c.to_string())));
+        text.push_str(&format!("Architecture: {}\n", sys_info.architecture));
+        text.push_str(&format!("Driver: {}\n\n", sys_info.cpu_driver.as_deref().unwrap_or("Unknown")));
         
         if crate::CONFIG.has_config() {
             text.push_str(&format!("Using settings defined in {} file\n\n", crate::CONFIG.get_path().display()));
@@ -864,7 +877,7 @@ impl SystemStatsLabel {
         
         text.push_str("Core    Usage   Temperature     Frequency\n");
         
-        let cores = SystemInfo::get_cpu_info();
+        let cores = SystemInfo::get_cpu_info(&mut sys);
         for core in cores {
             text.push_str(&format!("CPU{:<2}    {:>4.1}%    {:>6.0} °C    {:>6.0} MHz\n",
                 core.id, core.usage, core.temperature, core.frequency));
