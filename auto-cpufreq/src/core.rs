@@ -23,14 +23,22 @@ pub const ALL_GOVERNORS: &[&str] = &[
     "powersave"
 ];
 
-pub const INSTALL_SCRIPT: &str = include_str!("/usr/local/share/auto-cpufreq/scripts/auto-cpufreq-install.sh");
-pub const REMOVE_SCRIPT: &str = include_str!("/usr/local/share/auto-cpufreq/scripts/auto-cpufreq-remove.sh");
-const CPUFREQCTL_SCRIPT: &str = include_str!("/usr/local/share/auto-cpufreq/scripts/cpufreqctl.sh");
-const SYSTEMD_SERVICE: &str = include_str!("/usr/local/share/auto-cpufreq/scripts/auto-cpufreq.service");
-const OPENRC_SERVICE: &str = include_str!("/usr/local/share/auto-cpufreq/scripts/auto-cpufreq-openrc");
-const DINIT_SERVICE: &str = include_str!("/usr/local/share/auto-cpufreq/scripts/auto-cpufreq-dinit");
-const RUNIT_SERVICE: &str = include_str!("/usr/local/share/auto-cpufreq/scripts/auto-cpufreq-runit");
-const S6_SERVICE: &str = include_str!("/usr/local/share/auto-cpufreq/scripts/auto-cpufreq-s6/run");
+fn read_auto_cpufreq_file(sub_path: &str) -> String {
+    let path = format!("/usr/local/share/auto-cpufreq/scripts/{}", sub_path);
+    fs::read_to_string(&path).unwrap_or_else(|_| {
+        eprintln!("Warning: File {} not found!", path);
+        String::new()
+    })
+}
+
+pub fn install_script() -> String { read_auto_cpufreq_file("auto-cpufreq-install.sh") }
+pub fn remove_script() -> String { read_auto_cpufreq_file("auto-cpufreq-remove.sh") }
+pub fn cpufreqctl_script() -> String { read_auto_cpufreq_file("cpufreqctl.sh") }
+pub fn systemd_service() -> String { read_auto_cpufreq_file("auto-cpufreq.service") }
+pub fn openrc_service() -> String { read_auto_cpufreq_file("auto-cpufreq-openrc") }
+pub fn dinit_service() -> String { read_auto_cpufreq_file("auto-cpufreq-dinit") }
+pub fn runit_service() -> String { read_auto_cpufreq_file("auto-cpufreq-runit") }
+pub fn s6_service() -> String { read_auto_cpufreq_file("auto-cpufreq-s6/run") }
 
 // ============================================================================
 // Global state structures
@@ -600,8 +608,8 @@ fn deploy_cpufreqctl() -> Result<()> {
     
     if !Path::new(target).exists() {
         println!("\n* Deploying cpufreqctl helper script");
-        fs::write(target, CPUFREQCTL_SCRIPT)?;
-        
+        fs::write(target, cpufreqctl_script())?;        
+
         Command::new("chmod")
             .args(&["+x", target])
             .status()?;
@@ -780,7 +788,7 @@ pub fn run_install_script() -> Result<()> {
     
     // Write script to temporary file
     let temp_script = "/tmp/auto-cpufreq-install.sh";
-    fs::write(temp_script, INSTALL_SCRIPT)?;
+    fs::write(temp_script, install_script())?;
     
     // Make executable
     Command::new("chmod")
@@ -810,7 +818,7 @@ pub fn run_remove_script() -> Result<()> {
     
     // Write script to temporary file
     let temp_script = "/tmp/auto-cpufreq-remove.sh";
-    fs::write(temp_script, REMOVE_SCRIPT)?;
+    fs::write(temp_script, remove_script())?;
     
     // Make executable
     Command::new("chmod")
@@ -835,13 +843,12 @@ pub fn run_remove_script() -> Result<()> {
 }
 
 /// Get the install script content (for external use)
-pub fn get_install_script() -> &'static str {
-    INSTALL_SCRIPT
+pub fn get_install_script() -> String { 
+    install_script()
 }
 
-/// Get the remove script content (for external use)
-pub fn get_remove_script() -> &'static str {
-    REMOVE_SCRIPT
+pub fn get_remove_script() -> String { 
+    remove_script()
 }
 
 // ============================================================================
@@ -932,7 +939,7 @@ pub fn remove_daemon() -> Result<()> {
 fn install_systemd() -> Result<()> {
     println!("\n* Deploying auto-cpufreq systemd unit file");
     
-    fs::write("/etc/systemd/system/auto-cpufreq.service", SYSTEMD_SERVICE)?;
+    fs::write("/etc/systemd/system/auto-cpufreq.service", systemd_service())?;
     
     println!("\n* Reloading systemd manager configuration");
     Command::new("systemctl")
@@ -986,7 +993,7 @@ fn remove_systemd() -> Result<()> {
 fn install_openrc() -> Result<()> {
     println!("\n* Deploying auto-cpufreq openrc unit file");
     
-    fs::write("/etc/init.d/auto-cpufreq", OPENRC_SERVICE)?;
+    fs::write("/etc/init.d/auto-cpufreq", openrc_service())?;
     
     Command::new("chmod")
         .args(&["+x", "/etc/init.d/auto-cpufreq"])
@@ -1029,7 +1036,7 @@ fn remove_openrc() -> Result<()> {
 fn install_dinit() -> Result<()> {
     println!("\n* Deploying auto-cpufreq (dinit) unit file");
     
-    fs::write("/etc/dinit.d/auto-cpufreq", DINIT_SERVICE)?;
+    fs::write("/etc/dinit.d/auto-cpufreq", dinit_service())?;
     
     println!("\n* Starting auto-cpufreq daemon (dinit) service");
     Command::new("dinitctl")
@@ -1096,7 +1103,7 @@ fn install_runit() -> Result<()> {
     fs::create_dir_all(&sv_dir)?;
     
     let run_script = format!("{}/run", sv_dir);
-    fs::write(&run_script, RUNIT_SERVICE)?;
+    fs::write(&run_script, runit_service())?;
     
     Command::new("chmod")
         .args(&["+x", &run_script])
@@ -1165,7 +1172,7 @@ fn install_s6() -> Result<()> {
     fs::create_dir_all(s6_dir)?;
     
     let run_script = format!("{}/run", s6_dir);
-    fs::write(&run_script, S6_SERVICE)?;
+    fs::write(&run_script, s6_service())?;
     
     Command::new("chmod")
         .args(&["+x", &run_script])
