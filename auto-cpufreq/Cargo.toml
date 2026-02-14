@@ -45,3 +45,7 @@ ksni = "0.2"
 [features]
 default = []
 gui = ["gtk", "gdk", "gdk-pixbuf", "glib", "gio"]
+
+[profile.release]
+lto = true
+codegen-units = 1
