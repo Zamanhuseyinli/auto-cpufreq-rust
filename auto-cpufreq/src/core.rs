@@ -1,8 +1,11 @@
-// src/core.rs
+// src/core.rs - OPTIMIZED VERSION
 use std::fs::{self, File};
 use std::io::{Write, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use std::collections::HashMap;
 use sysinfo::System;
 use crate::power_helper::SYSTEMCTL_EXISTS;
 use chrono::Local;
@@ -10,6 +13,145 @@ use anyhow::{Result, bail, Context};
 
 use crate::config::CONFIG;
 use crate::globals::AVAILABLE_GOVERNORS_SORTED;
+
+// ============================================================================
+// OPTIMIZATION: Cached System Wrapper
+// ============================================================================
+pub struct CachedSystem {
+    sys: System,
+    last_refresh: Instant,
+    refresh_interval: Duration,
+}
+
+impl CachedSystem {
+    pub fn new(refresh_interval_secs: u64) -> Self {
+        Self {
+            sys: System::new_all(),
+            last_refresh: Instant::now() - Duration::from_secs(999), // Force initial refresh
+            refresh_interval: Duration::from_secs(refresh_interval_secs),
+        }
+    }
+
+    pub fn get_refreshed_system(&mut self) -> &mut System {
+        if self.last_refresh.elapsed() > self.refresh_interval {
+            self.sys.refresh_cpu();
+            std::thread::sleep(Duration::from_millis(200));
+            self.sys.refresh_cpu();
+            self.last_refresh = Instant::now();
+        }
+        &mut self.sys
+    }
+
+    pub fn force_refresh(&mut self) {
+        self.sys.refresh_cpu();
+        std::thread::sleep(Duration::from_millis(200));
+        self.sys.refresh_cpu();
+        self.last_refresh = Instant::now();
+    }
+}
+
+// ============================================================================
+// OPTIMIZATION: Temperature Sensor Cache
+// ============================================================================
+pub struct TempSensorCache {
+    sensor_paths: HashMap<usize, PathBuf>,
+    package_temp_path: Option<PathBuf>,
+    last_scan: Instant,
+}
+
+impl TempSensorCache {
+    pub fn new() -> Self {
+        let mut cache = Self {
+            sensor_paths: HashMap::new(),
+            package_temp_path: None,
+            last_scan: Instant::now(),
+        };
+        cache.scan_sensors();
+        cache
+    }
+
+    fn scan_sensors(&mut self) {
+        let sensor_priority = ["coretemp", "k10temp", "zenpower", "acpitz"];
+        let hwmon_path = "/sys/class/hwmon";
+        
+        if let Ok(entries) = fs::read_dir(hwmon_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name_file = path.join("name");
+                
+                if let Ok(sensor_name) = fs::read_to_string(&name_file) {
+                    let sensor_name = sensor_name.trim();
+                    
+                    if sensor_priority.contains(&sensor_name) {
+                        // Cache package temp (temp1)
+                        let pkg_temp = path.join("temp1_input");
+                        if pkg_temp.exists() {
+                            self.package_temp_path = Some(pkg_temp);
+                        }
+                        
+                        // Cache core temps (temp2+)
+                        for temp_id in 2..20 {
+                            let temp_file = path.join(format!("temp{}_input", temp_id));
+                            if temp_file.exists() {
+                                let core_id = temp_id - 2;
+                                self.sensor_paths.insert(core_id, temp_file);
+                            }
+                        }
+                        break; // Use first matching sensor
+                    }
+                }
+            }
+        }
+        
+        self.last_scan = Instant::now();
+    }
+
+    pub fn read_core_temp(&self, core_id: usize) -> f32 {
+        // Try specific core sensor first
+        if let Some(path) = self.sensor_paths.get(&core_id) {
+            if let Ok(temp_str) = fs::read_to_string(path) {
+                if let Ok(temp) = temp_str.trim().parse::<f32>() {
+                    return temp / 1000.0;
+                }
+            }
+        }
+        
+        // Fallback to package temp
+        if let Some(ref path) = self.package_temp_path {
+            if let Ok(temp_str) = fs::read_to_string(path) {
+                if let Ok(temp) = temp_str.trim().parse::<f32>() {
+                    return temp / 1000.0;
+                }
+            }
+        }
+        
+        0.0
+    }
+
+    pub fn read_package_temp(&self) -> f32 {
+        if let Some(ref path) = self.package_temp_path {
+            if let Ok(temp_str) = fs::read_to_string(path) {
+                if let Ok(temp) = temp_str.trim().parse::<f32>() {
+                    return temp / 1000.0;
+                }
+            }
+        }
+        0.0
+    }
+
+    // Rescan if sensors might have changed (rare)
+    pub fn maybe_rescan(&mut self) {
+        if self.last_scan.elapsed() > Duration::from_secs(300) {
+            self.scan_sensors();
+        }
+    }
+}
+
+// Global instances with lazy initialization
+lazy_static::lazy_static! {
+    static ref TEMP_CACHE: Arc<Mutex<TempSensorCache>> = Arc::new(Mutex::new(TempSensorCache::new()));
+    static ref CACHED_SYSTEM: Arc<Mutex<CachedSystem>> = Arc::new(Mutex::new(CachedSystem::new(2)));
+}
 
 // ============================================================================
 // Constants
@@ -94,7 +236,7 @@ impl AutoCpuFreqState {
 pub fn get_version() -> Result<String> {
     let state = AutoCpuFreqState::new();
     
-       if state.is_aur {
+    if state.is_aur {
         let output = Command::new("pacman")
             .args(&["-Qi", "auto-cpufreq"])
             .output()?;
@@ -350,81 +492,14 @@ pub fn distro_info() -> Result<()> {
 }
 
 // ============================================================================
-// Temperature reading functions
+// OPTIMIZED: Temperature reading functions
 // ============================================================================
-
-/// Read CPU core temperature from hwmon sensors
-fn read_cpu_temperature(core_id: usize) -> f32 {
-    let sensor_priority = ["coretemp", "k10temp", "zenpower", "acpitz"];
-    let hwmon_path = "/sys/class/hwmon";
-    
-    if let Ok(entries) = fs::read_dir(hwmon_path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name_file = path.join("name");
-            
-            if let Ok(sensor_name) = fs::read_to_string(&name_file) {
-                let sensor_name = sensor_name.trim();
-                
-                if sensor_priority.contains(&sensor_name) {
-                    // For coretemp: temp1 = Package, temp2+ = cores
-                    // Try temp{core_id + 2}_input first, then iterate
-                    let preferred_temp_id = core_id + 2;
-                    let max_temp_id = std::cmp::min(core_id + 10, 20);
-                    
-                    for temp_id in preferred_temp_id..max_temp_id {
-                        let temp_file = path.join(format!("temp{}_input", temp_id));
-                        
-                        if temp_file.exists() {
-                            if let Ok(temp_str) = fs::read_to_string(&temp_file) {
-                                if let Ok(temp_millidegrees) = temp_str.trim().parse::<f32>() {
-                                    return temp_millidegrees / 1000.0;
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Fallback: use package temp for all cores
-                    let temp_input = path.join("temp1_input");
-                    if let Ok(temp_str) = fs::read_to_string(&temp_input) {
-                        if let Ok(temp) = temp_str.trim().parse::<f32>() {
-                            return temp / 1000.0;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    0.0
+pub fn read_cpu_temperature(core_id: usize) -> f32 {
+    TEMP_CACHE.lock().unwrap().read_core_temp(core_id)
 }
 
-/// Read overall package temperature
-fn read_package_temperature() -> f32 {
-    let hwmon_path = "/sys/class/hwmon";
-    
-    if let Ok(entries) = fs::read_dir(hwmon_path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name_file = path.join("name");
-            
-            if let Ok(sensor_name) = fs::read_to_string(&name_file) {
-                let sensor_name = sensor_name.trim();
-                
-                if sensor_name == "coretemp" || sensor_name == "k10temp" {
-                    // temp1 is usually Package/Tdie
-                    let temp_input = path.join("temp1_input");
-                    if let Ok(temp_str) = fs::read_to_string(&temp_input) {
-                        if let Ok(temp) = temp_str.trim().parse::<f32>() {
-                            return temp / 1000.0;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    0.0
+pub fn read_package_temperature() -> f32 {
+    TEMP_CACHE.lock().unwrap().read_package_temp()
 }
 
 // ============================================================================
@@ -453,18 +528,15 @@ pub fn sysinfo() -> Result<()> {
         .to_string();
     println!("Driver: {}", driver);
     
-    // FIXED: Get CPU info properly with refresh
-    let mut sys = System::new_all();
-    sys.refresh_cpu();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    sys.refresh_cpu();
+    // OPTIMIZED: Use cached system
+    let mut cached_sys = CACHED_SYSTEM.lock().unwrap();
+    let sys = cached_sys.get_refreshed_system();
     
     if let Some(cpu) = sys.cpus().first() {
         println!("\n{}", "-".repeat(30) + " Current CPU stats " + &"-".repeat(30));
         println!("\nCPU max frequency: {:.0} MHz", cpu.frequency());
     }
     
-    // FIXED: Better column alignment for frequency display
     println!("\n{:<6} {:<8} {:<16} {:<10}", "Core", "Usage", "Temperature", "Frequency");
     
     for (i, cpu) in sys.cpus().iter().enumerate() {
@@ -475,7 +547,6 @@ pub fn sysinfo() -> Result<()> {
             "-- °C".to_string()
         };
         
-        // FIXED: Proper column formatting
         println!("{:<6} {:<8.1}% {:<16} {:.0} MHz", 
             format!("CPU{}", i),
             cpu.cpu_usage(),
@@ -484,7 +555,6 @@ pub fn sysinfo() -> Result<()> {
         );
     }
     
-    // Show average/package temperature if available
     let pkg_temp = read_package_temperature();
     if pkg_temp > 0.0 {
         println!("\nPackage temperature: {:.1} °C", pkg_temp);
@@ -584,7 +654,7 @@ pub fn print_current_gov() {
 pub fn cpufreqctl() -> Result<()> {
     let target = "/usr/local/bin/cpufreqctl.auto-cpufreq";
     
-      if  !Path::new(target).exists() {
+    if !Path::new(target).exists() {
         let source = PathBuf::from(SCRIPTS_DIR).join("cpufreqctl.sh");
         fs::copy(source, target)?;
         
@@ -611,7 +681,7 @@ fn deploy_cpufreqctl() -> Result<()> {
     
     if !Path::new(target).exists() {
         println!("\n* Deploying cpufreqctl helper script");
-        fs::write(target, cpufreqctl_script())?;        
+        fs::write(target, cpufreqctl_script())?;
 
         Command::new("chmod")
             .args(&["+x", target])
@@ -633,34 +703,28 @@ fn remove_cpufreqctl() -> Result<()> {
 }
 
 // ============================================================================
-// MERGED: Stats file update function from version 2
+// Stats file update function
 // ============================================================================
-
-/// Write current stats to stats file (called by daemon every cycle)
 pub fn update_stats_file() -> Result<()> {
     let state = AutoCpuFreqState::new();
     
-    // Ensure directory exists
     if let Some(parent) = state.stats_file_path.parent() {
         fs::create_dir_all(parent)?;
     }
     
-    // Generate stats content
-    let mut stats = String::new();
+    // OPTIMIZED: Use String buffer instead of multiple allocations
+    let mut stats = String::with_capacity(2048);
     
     use std::fmt::Write as FmtWrite;
     
-    // Timestamp
     let _ = writeln!(&mut stats, "\n{}", "=".repeat(80));
     let _ = writeln!(&mut stats, "auto-cpufreq daemon - {}", 
         Local::now().format("%Y-%m-%d %H:%M:%S"));
     let _ = writeln!(&mut stats, "{}\n", "=".repeat(80));
     
-    // Quick stats
-    let mut sys = System::new_all();
-    sys.refresh_cpu();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    sys.refresh_cpu();
+    // OPTIMIZED: Use cached system
+    let mut cached_sys = CACHED_SYSTEM.lock().unwrap();
+    let sys = cached_sys.get_refreshed_system();
     
     let cpu_usage: f32 = sys.cpus().iter()
         .map(|c| c.cpu_usage())
@@ -687,7 +751,6 @@ pub fn update_stats_file() -> Result<()> {
     
     let _ = writeln!(&mut stats, "\n{}", "-".repeat(80));
     
-    // Write to file
     fs::write(&state.stats_file_path, stats)?;
     
     Ok(())
@@ -697,12 +760,9 @@ pub fn update_stats_file() -> Result<()> {
 // Load information
 // ============================================================================
 pub fn get_load() -> (f64, f64) {
-    let mut sys = System::new_all();
-    
-    // FIXED: Proper CPU refresh sequence
-    sys.refresh_cpu();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    sys.refresh_cpu();
+    // OPTIMIZED: Use cached system
+    let mut cached_sys = CACHED_SYSTEM.lock().unwrap();
+    let sys = cached_sys.get_refreshed_system();
     
     let cpu_usage: f64 = sys.cpus().iter()
         .map(|cpu| cpu.cpu_usage() as f64)
@@ -714,9 +774,10 @@ pub fn get_load() -> (f64, f64) {
     println!("\nTotal CPU usage: {:.1}%", cpu_usage);
     println!("Total system load: {:.2}", load1m);
     
-    // Calculate average temperature
+    // OPTIMIZED: Calculate average temperature using cached sensors
+    let temp_cache = TEMP_CACHE.lock().unwrap();
     let temps: Vec<f32> = (0..sys.cpus().len())
-        .map(|i| read_cpu_temperature(i))
+        .map(|i| temp_cache.read_core_temp(i))
         .filter(|&t| t > 0.0)
         .collect();
     
@@ -773,12 +834,22 @@ pub fn countdown(seconds: u64) {
 }
 
 // ============================================================================
-// MERGED: Improved daemon detection from version 2
+// OPTIMIZED: Improved daemon detection
 // ============================================================================
-
 pub fn is_running(program: &str, argument: &str) -> bool {
+    // OPTIMIZATION: Try fast pidof first
+    if let Ok(output) = Command::new("pidof")
+        .arg("-x")
+        .arg(program)
+        .output()
+    {
+        if !output.stdout.is_empty() {
+            // Found PID, now verify it has the right argument
+            return check_proc_daemon_status(program, argument);
+        }
+    }
     
-    
+    // Fallback to full check
     check_proc_daemon_status(program, argument)
 }
 
@@ -786,7 +857,6 @@ fn check_proc_daemon_status(program: &str, argument: &str) -> bool {
     let proc_path = Path::new("/proc");
     
     if !proc_path.exists() {
-        // Fallback to sysinfo if /proc not available
         return is_running_sysinfo(program, argument);
     }
     
@@ -800,15 +870,12 @@ fn check_proc_daemon_status(program: &str, argument: &str) -> bool {
         let file_name = entry.file_name();
         let file_name_str = file_name.to_string_lossy();
         
-        // Only check numeric directories (PIDs)
         if !file_name_str.chars().all(|c| c.is_numeric()) {
             continue;
         }
         
-        // Read cmdline
         let cmdline_path = path.join("cmdline");
         if let Ok(cmdline_bytes) = fs::read(&cmdline_path) {
-            // /proc/PID/cmdline uses null bytes as separators
             let cmdline_str = String::from_utf8_lossy(&cmdline_bytes);
             let args: Vec<&str> = cmdline_str.split('\0').filter(|s| !s.is_empty()).collect();
             
@@ -816,11 +883,9 @@ fn check_proc_daemon_status(program: &str, argument: &str) -> bool {
                 continue;
             }
             
-            // Check if program name matches
             let has_program = args.iter().any(|arg| arg.contains(program));
             
             if has_program {
-                // Check if argument matches
                 let has_argument = args.iter().any(|arg| arg.contains(argument));
                 
                 if has_argument {
@@ -833,7 +898,6 @@ fn check_proc_daemon_status(program: &str, argument: &str) -> bool {
     false
 }
 
-// Fallback to sysinfo (though it doesn't work well)
 fn is_running_sysinfo(program: &str, argument: &str) -> bool {
     let mut sys = System::new();
     sys.refresh_processes();
@@ -871,12 +935,9 @@ pub fn daemon_running_check() -> Result<()> {
 
     Ok(())
 }
-// MERGED: Enhanced version with systemctl fallback check
+
 pub fn not_running_daemon_check() -> Result<()> {
-    // Check if daemon process is running
     if !is_running("auto-cpufreq", "--daemon") {
-        // Additional check: maybe it's running but we can't detect it via process list
-        // Check if systemd service is active
         if *SYSTEMCTL_EXISTS {
             let status = Command::new("systemctl")
                 .args(&["is-active", "auto-cpufreq"])
@@ -885,9 +946,6 @@ pub fn not_running_daemon_check() -> Result<()> {
             if let Ok(out) = status {
                 let active = String::from_utf8_lossy(&out.stdout);
                 if active.trim() == "active" {
-                    // Service is active but we couldn't find the process
-                    // This might be a timing issue, assume it's running
-                    eprintln!("DEBUG: systemctl says service is active");
                     return Ok(());
                 }
             }
@@ -902,29 +960,24 @@ pub fn not_running_daemon_check() -> Result<()> {
 
     Ok(())
 }
+
 // ============================================================================
 // Install/Remove script runners
 // ============================================================================
-
-/// Run the embedded install script (pre-installation tasks)
 pub fn run_install_script() -> Result<()> {
     println!("\n* Running pre-installation script");
     
-    // Write script to temporary file
     let temp_script = "/tmp/auto-cpufreq-install.sh";
     fs::write(temp_script, install_script())?;
     
-    // Make executable
     Command::new("chmod")
         .args(&["+x", temp_script])
         .status()?;
     
-    // Execute script
     let status = Command::new("sh")
         .arg(temp_script)
         .status()?;
     
-    // Clean up
     let _ = fs::remove_file(temp_script);
     
     if status.success() {
@@ -936,25 +989,20 @@ pub fn run_install_script() -> Result<()> {
     }
 }
 
-/// Run the embedded remove script (post-removal tasks)
 pub fn run_remove_script() -> Result<()> {
     println!("\n* Running post-removal script");
     
-    // Write script to temporary file
     let temp_script = "/tmp/auto-cpufreq-remove.sh";
     fs::write(temp_script, remove_script())?;
     
-    // Make executable
     Command::new("chmod")
         .args(&["+x", temp_script])
         .status()?;
     
-    // Execute script
     let status = Command::new("sh")
         .arg(temp_script)
         .status()?;
     
-    // Clean up
     let _ = fs::remove_file(temp_script);
     
     if status.success() {
@@ -966,7 +1014,6 @@ pub fn run_remove_script() -> Result<()> {
     }
 }
 
-/// Get the install script content (for external use)
 pub fn get_install_script() -> String { 
     install_script()
 }
@@ -978,8 +1025,6 @@ pub fn get_remove_script() -> String {
 // ============================================================================
 // Init system detection and daemon installation/removal
 // ============================================================================
-
-/// Detect init system
 pub fn detect_init_system() -> &'static str {
     let output = Command::new("ps")
         .args(&["-p", "1", "-o", "comm="])
@@ -1000,7 +1045,6 @@ pub fn detect_init_system() -> &'static str {
     }
 }
 
-/// Install daemon using appropriate init system
 pub fn install_daemon() -> Result<()> {
     let init = detect_init_system();
     
@@ -1008,7 +1052,6 @@ pub fn install_daemon() -> Result<()> {
     println!("Installing auto-cpufreq daemon ({} detected)", init);
     println!("{}", "=".repeat(80));
     
-    // Run pre-install script if available
     run_install_script()?;
     
     deploy_cpufreqctl()?;
@@ -1027,7 +1070,6 @@ pub fn install_daemon() -> Result<()> {
     }
 }
 
-/// Remove daemon using appropriate init system
 pub fn remove_daemon() -> Result<()> {
     let init = detect_init_system();
     
@@ -1050,7 +1092,6 @@ pub fn remove_daemon() -> Result<()> {
     
     remove_cpufreqctl()?;
     
-    // Run post-remove script if available
     run_remove_script()?;
     
     result
@@ -1059,7 +1100,6 @@ pub fn remove_daemon() -> Result<()> {
 // ============================================================================
 // systemd
 // ============================================================================
-
 fn install_systemd() -> Result<()> {
     println!("\n* Deploying auto-cpufreq systemd unit file");
     
@@ -1113,7 +1153,6 @@ fn remove_systemd() -> Result<()> {
 // ============================================================================
 // OpenRC
 // ============================================================================
-
 fn install_openrc() -> Result<()> {
     println!("\n* Deploying auto-cpufreq openrc unit file");
     
@@ -1156,7 +1195,6 @@ fn remove_openrc() -> Result<()> {
 // ============================================================================
 // dinit
 // ============================================================================
-
 fn install_dinit() -> Result<()> {
     println!("\n* Deploying auto-cpufreq (dinit) unit file");
     
@@ -1195,7 +1233,6 @@ fn remove_dinit() -> Result<()> {
 // ============================================================================
 // runit
 // ============================================================================
-
 fn install_runit() -> Result<()> {
     let (sv_path, service_path) = if Path::new("/etc/os-release").exists() {
         let os_release = fs::read_to_string("/etc/os-release")?;
@@ -1288,7 +1325,6 @@ fn remove_runit() -> Result<()> {
 // ============================================================================
 // s6
 // ============================================================================
-
 fn install_s6() -> Result<()> {
     println!("\n* Deploying auto-cpufreq (s6) unit file");
     
@@ -1334,27 +1370,23 @@ fn remove_s6() -> Result<()> {
     
     Ok(())
 }
+
 // ============================================================================
 // Automatic frequency adjustment - Main daemon logic
 // ============================================================================
-
-/// Get appropriate governor based on system state
 fn get_appropriate_governor(is_charging: bool, cpu_usage: f32, load: f32) -> &'static str {
     let state = AutoCpuFreqState::new();
     let override_val = get_override(&state);
     
-    // Check override first
     match override_val {
         GovernorOverride::Performance => return "performance",
         GovernorOverride::Powersave => return "powersave",
-        GovernorOverride::Default => {}, // Continue to auto logic
+        GovernorOverride::Default => {},
     }
     
-    // Check config file for specific governor
     if CONFIG.has_option("charger", "governor") && is_charging {
         let gov = CONFIG.get("charger", "governor", "");
         if !gov.is_empty() && AVAILABLE_GOVERNORS_SORTED.iter().any(|g| g == &gov) {
-            // Return reference from AVAILABLE_GOVERNORS_SORTED to avoid memory leak
             if let Some(g) = AVAILABLE_GOVERNORS_SORTED.iter().find(|&x| x == &gov) {
                 return g.as_str();
             }
@@ -1370,40 +1402,33 @@ fn get_appropriate_governor(is_charging: bool, cpu_usage: f32, load: f32) -> &'s
         }
     }
     
-    // Auto selection based on state
     if is_charging {
-        // AC plugged - performance oriented
         if cpu_usage > 50.0 || load > state.performance_load_threshold {
             if AVAILABLE_GOVERNORS_SORTED.contains(&"performance".to_string()) {
                 return "performance";
             }
         }
-        // Moderate load
         if AVAILABLE_GOVERNORS_SORTED.contains(&"schedutil".to_string()) {
             return "schedutil";
         } else if AVAILABLE_GOVERNORS_SORTED.contains(&"ondemand".to_string()) {
             return "ondemand";
         }
     } else {
-        // Battery - power saving oriented
         if cpu_usage < 25.0 && load < state.powersave_load_threshold {
             if AVAILABLE_GOVERNORS_SORTED.contains(&"powersave".to_string()) {
                 return "powersave";
             }
         }
-        // Moderate battery usage
         if AVAILABLE_GOVERNORS_SORTED.contains(&"schedutil".to_string()) {
             return "schedutil";
         }
     }
     
-    // Fallback to first available governor
     AVAILABLE_GOVERNORS_SORTED.first()
         .map(|s| s.as_str())
         .unwrap_or("schedutil")
 }
 
-/// Set CPU governor
 fn set_governor(governor: &str) -> Result<()> {
     println!("Setting governor: {}", governor);
     
@@ -1421,12 +1446,10 @@ fn set_governor(governor: &str) -> Result<()> {
     Ok(())
 }
 
-/// Set turbo based on system usage
 fn set_turbo_based_on_usage(cpu_usage: f32, is_charging: bool) -> Result<()> {
     let state = AutoCpuFreqState::new();
     let turbo_override = get_turbo_override(&state);
     
-    // Check override
     match turbo_override {
         TurboOverride::Always => {
             set_turbo(true);
@@ -1436,10 +1459,9 @@ fn set_turbo_based_on_usage(cpu_usage: f32, is_charging: bool) -> Result<()> {
             set_turbo(false);
             return Ok(());
         }
-        TurboOverride::Auto => {}, // Continue to auto logic
+        TurboOverride::Auto => {},
     }
     
-    // Check config
     if CONFIG.has_option("charger", "turbo") && is_charging {
         let turbo_conf = CONFIG.get("charger", "turbo", "auto");
         match turbo_conf.as_str() {
@@ -1458,17 +1480,13 @@ fn set_turbo_based_on_usage(cpu_usage: f32, is_charging: bool) -> Result<()> {
         }
     }
     
-    // Auto decision
-    let mut sys = System::new_all();
-    sys.refresh_cpu();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    sys.refresh_cpu();
+    // OPTIMIZED: Use cached system and temps
+    let mut cached_sys = CACHED_SYSTEM.lock().unwrap();
+    let sys = cached_sys.get_refreshed_system();
     
+    let temp_cache = TEMP_CACHE.lock().unwrap();
     let cores = (0..sys.cpus().len())
-        .map(|i| {
-            let temp = read_cpu_temperature(i);
-            temp
-        })
+        .map(|i| temp_cache.read_core_temp(i))
         .filter(|&t| t > 0.0)
         .collect::<Vec<_>>();
     
@@ -1479,14 +1497,12 @@ fn set_turbo_based_on_usage(cpu_usage: f32, is_charging: bool) -> Result<()> {
     };
     
     if is_charging {
-        // AC: enable turbo if high load or moderate temp
         if cpu_usage > 25.0 && avg_temp < 75.0 {
             set_turbo(true);
         } else if avg_temp >= 75.0 {
             set_turbo(false);
         }
     } else {
-        // Battery: disable turbo to save power unless heavy load
         if cpu_usage > 75.0 {
             set_turbo(true);
         } else {
@@ -1497,16 +1513,12 @@ fn set_turbo_based_on_usage(cpu_usage: f32, is_charging: bool) -> Result<()> {
     Ok(())
 }
 
-/// Main automatic frequency adjustment function
-/// Called by daemon every cycle
 pub fn set_autofreq() -> Result<()> {
     let is_charging = charging()?;
     
-    // Get system metrics
-    let mut sys = System::new_all();
-    sys.refresh_cpu();
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    sys.refresh_cpu();
+    // OPTIMIZED: Use cached system
+    let mut cached_sys = CACHED_SYSTEM.lock().unwrap();
+    let sys = cached_sys.get_refreshed_system();
     
     let cpu_usage: f32 = sys.cpus().iter()
         .map(|c| c.cpu_usage())
@@ -1514,7 +1526,6 @@ pub fn set_autofreq() -> Result<()> {
     
     let load = System::load_average().one as f32;
     
-    // Get and set appropriate governor
     let target_governor = get_appropriate_governor(is_charging, cpu_usage, load);
     let current_governor = get_current_gov().unwrap_or_else(|_| "unknown".to_string());
     
@@ -1522,15 +1533,11 @@ pub fn set_autofreq() -> Result<()> {
         set_governor(target_governor)?;
     }
     
-    // Set turbo
     set_turbo_based_on_usage(cpu_usage, is_charging)?;
     
     Ok(())
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1547,5 +1554,12 @@ mod tests {
         assert_eq!(TurboOverride::from_str("never"), TurboOverride::Never);
         assert_eq!(TurboOverride::from_str("always"), TurboOverride::Always);
         assert_eq!(TurboOverride::from_str("auto"), TurboOverride::Auto);
+    }
+
+    #[test]
+    fn test_temp_cache() {
+        let cache = TempSensorCache::new();
+        let temp = cache.read_core_temp(0);
+        assert!(temp >= 0.0);
     }
 }

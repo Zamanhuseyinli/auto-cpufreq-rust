@@ -1,6 +1,7 @@
-// src/modules/system_monitor.rs
+// src/modules/system_monitor.rs - OPTIMIZED VERSION
 use std::thread;
 use std::time::Duration;
+use std::fmt::Write as FmtWrite;
 
 use sysinfo::System;
 
@@ -23,6 +24,37 @@ impl std::fmt::Display for ViewType {
     }
 }
 
+// ============================================================================
+// OPTIMIZATION: String buffer pooling
+// ============================================================================
+struct StringBuffer {
+    buffer: String,
+}
+
+impl StringBuffer {
+    fn new() -> Self {
+        Self {
+            buffer: String::with_capacity(4096),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.buffer.clear();
+    }
+
+    fn write_str(&mut self, s: &str) {
+        self.buffer.push_str(s);
+    }
+
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) {
+        let _ = self.buffer.write_fmt(args);
+    }
+
+    fn to_lines(&self) -> Vec<String> {
+        self.buffer.lines().map(String::from).collect()
+    }
+}
+
 pub struct SystemMonitor {
     pub view: ViewType,
     pub suggestion: bool,
@@ -30,6 +62,9 @@ pub struct SystemMonitor {
     pub left: Vec<String>,
     pub right: Vec<String>,
     sys: System,
+    // OPTIMIZED: Reusable string buffers
+    left_buffer: StringBuffer,
+    right_buffer: StringBuffer,
 }
 
 impl SystemMonitor {
@@ -47,20 +82,23 @@ impl SystemMonitor {
             left: Vec::new(), 
             right: Vec::new(),
             sys,
+            left_buffer: StringBuffer::new(),
+            right_buffer: StringBuffer::new(),
         }
     }
 
     pub fn update(&mut self) {
-        // CRITICAL: Proper CPU refresh sequence
+        // OPTIMIZED: Single refresh sequence
         self.sys.refresh_cpu();
         std::thread::sleep(Duration::from_millis(200));
         self.sys.refresh_cpu();
         
         let sys_info = SystemInfo::new();
-        let report = sys_info.generate_system_report(&mut self.sys);
+        let report = sys_info.generate_system_report(&self.sys);
         self.format_system_info(&report);
     }
 
+    // OPTIMIZED: Helper to format options efficiently
     fn format_option<T: std::fmt::Display + std::fmt::Debug>(opt: Option<T>, verbose: bool) -> String {
         if verbose {
             format!("{:?}", opt)
@@ -82,61 +120,71 @@ impl SystemMonitor {
         }
     }
 
+    // OPTIMIZED: Format using string buffers instead of Vec allocations
     pub fn format_system_info(&mut self, report: &SystemReport) {
-        self.left.clear();
-        self.right.clear();
+        // Clear buffers
+        self.left_buffer.clear();
+        self.right_buffer.clear();
 
-        // Left column - System Information
-        self.left.push("System Information".to_string());
-        self.left.push(String::new());
-        self.left.push(format!("Linux distro: {} {}", report.distro_name, report.distro_ver));
-        self.left.push(format!("Linux kernel: {}", report.kernel_version));
-        self.left.push(format!("Processor: {}", report.processor_model));
+        // ========== LEFT COLUMN ==========
+        self.format_left_column(report);
+        
+        // ========== RIGHT COLUMN ==========
+        self.format_right_column(report);
+
+        // Convert buffers to line vectors
+        self.left = self.left_buffer.to_lines();
+        self.right = self.right_buffer.to_lines();
+    }
+
+    fn format_left_column(&mut self, report: &SystemReport) {
+        let buf = &mut self.left_buffer;
+
+        // System Information
+        buf.write_str("System Information\n\n");
+        buf.write_fmt(format_args!("Linux distro: {} {}\n", report.distro_name, report.distro_ver));
+        buf.write_fmt(format_args!("Linux kernel: {}\n", report.kernel_version));
+        buf.write_fmt(format_args!("Processor: {}\n", report.processor_model));
         
         if self.verbose {
-            self.left.push(format!("Cores: {:?}", report.total_core));
-            self.left.push(format!("Driver: {:?}", report.cpu_driver));
+            buf.write_fmt(format_args!("Cores: {:?}\n", report.total_core));
+            buf.write_fmt(format_args!("Driver: {:?}\n", report.cpu_driver));
         } else {
-            self.left.push(format!("Cores: {}", Self::format_option(report.total_core, false)));
-            self.left.push(format!("Driver: {}", report.cpu_driver.as_deref().unwrap_or("Unknown")));
+            buf.write_fmt(format_args!("Cores: {}\n", Self::format_option(report.total_core, false)));
+            buf.write_fmt(format_args!("Driver: {}\n", report.cpu_driver.as_deref().unwrap_or("Unknown")));
         }
         
-        self.left.push(format!("Architecture: {}", report.arch));
-        self.left.push(String::new());
+        buf.write_fmt(format_args!("Architecture: {}\n\n", report.arch));
 
         if crate::CONFIG.has_config() {
-            self.left.push(format!("Using settings defined in {}", crate::CONFIG.get_path().display()));
-            self.left.push(String::new());
+            buf.write_fmt(format_args!("Using settings defined in {}\n\n", crate::CONFIG.get_path().display()));
         }
 
         // Current CPU Stats
-        self.left.push("Current CPU Stats".to_string());
-        self.left.push(String::new());
+        buf.write_str("Current CPU Stats\n\n");
         
         if self.verbose {
-            self.left.push(format!("CPU max frequency: {:?} MHz", report.cpu_max_freq));
-            self.left.push(format!("CPU min frequency: {:?} MHz", report.cpu_min_freq));
+            buf.write_fmt(format_args!("CPU max frequency: {:?} MHz\n", report.cpu_max_freq));
+            buf.write_fmt(format_args!("CPU min frequency: {:?} MHz\n\n", report.cpu_min_freq));
         } else {
-            self.left.push(format!("CPU max frequency: {} MHz", 
-                report.cpu_max_freq.map(|f| format!("{:.0}", f)).unwrap_or_else(|| "Unknown".to_string())));
-            self.left.push(format!("CPU min frequency: {} MHz",
-                report.cpu_min_freq.map(|f| format!("{:.0}", f)).unwrap_or_else(|| "Unknown".to_string())));
+            let max_freq = report.cpu_max_freq.map(|f| format!("{:.0}", f)).unwrap_or_else(|| "Unknown".to_string());
+            let min_freq = report.cpu_min_freq.map(|f| format!("{:.0}", f)).unwrap_or_else(|| "Unknown".to_string());
+            buf.write_fmt(format_args!("CPU max frequency: {} MHz\n", max_freq));
+            buf.write_fmt(format_args!("CPU min frequency: {} MHz\n\n", min_freq));
         }
         
-        self.left.push(String::new());
-        
-        // FIXED: Compact but readable columns that fit in 40 chars total
-        self.left.push(format!("{:<5} {:<7} {:<11} {:<8}", "Core", "Usage", "Temp", "Freq"));
+        // Core info header
+        buf.write_fmt(format_args!("{:<5} {:<7} {:<11} {:<8}\n", "Core", "Usage", "Temp", "Freq"));
 
+        // Core info rows
         for core in &report.cores_info {
             let temp_str = if core.temperature > 0.0 {
-                format!("{:.0}°C", core.temperature)  // Compact: no space before unit
+                format!("{:.0}°C", core.temperature)
             } else {
                 "--°C".to_string()
             };
             
-            // FIXED: Compact format that fits in ~40 chars with full "Frequency" visible
-            self.left.push(format!("{:<5} {:>6.1}% {:<11} {:>5.0} MHz", 
+            buf.write_fmt(format_args!("{:<5} {:>6.1}% {:<11} {:>5.0} MHz\n", 
                 format!("CPU{}", core.id),
                 core.usage,
                 temp_str,
@@ -145,85 +193,84 @@ impl SystemMonitor {
         }
 
         if let Some(fan) = report.cpu_fan_speed {
-            self.left.push(String::new());
-            self.left.push(format!("CPU fan speed: {} RPM", fan));
+            buf.write_str("\n");
+            buf.write_fmt(format_args!("CPU fan speed: {} RPM\n", fan));
         }
+    }
 
-        // Right column - Battery Stats
-        self.right.push("Battery Stats".to_string());
-        self.right.push(String::new());
+    fn format_right_column(&mut self, report: &SystemReport) {
+        let buf = &mut self.right_buffer;
+
+        // Battery Stats
+        buf.write_str("Battery Stats\n\n");
         
         if self.verbose {
-            self.right.push(format!("Battery info: {:?}", report.battery_info));
+            buf.write_fmt(format_args!("Battery info: {:?}\n\n", report.battery_info));
         } else {
             let battery_status = Self::format_battery_status(
                 report.battery_info.is_charging, 
                 report.battery_info.is_ac_plugged,
                 false
             );
-            self.right.push(format!("Battery status: {}", battery_status));
+            buf.write_fmt(format_args!("Battery status: {}\n", battery_status));
             
             let battery_level = report.battery_info.battery_level
                 .map(|b| format!("{}%", b))
                 .unwrap_or_else(|| "Unknown".to_string());
-            self.right.push(format!("Battery level: {}", battery_level));
+            buf.write_fmt(format_args!("Battery level: {}\n", battery_level));
 
             let ac_status = report.battery_info.is_ac_plugged
                 .map(|ac| if ac { "Yes" } else { "No" })
                 .unwrap_or("Unknown");
-            self.right.push(format!("AC plugged: {}", ac_status));
+            buf.write_fmt(format_args!("AC plugged: {}\n", ac_status));
 
             let start_threshold = report.battery_info.charging_start_threshold
                 .map(|t| format!("{}%", t))
                 .unwrap_or_else(|| "Not set".to_string());
-            self.right.push(format!("Start threshold: {}", start_threshold));
+            buf.write_fmt(format_args!("Start threshold: {}\n", start_threshold));
 
             let stop_threshold = report.battery_info.charging_stop_threshold
                 .map(|t| format!("{}%", t))
                 .unwrap_or_else(|| "Not set".to_string());
-            self.right.push(format!("Stop threshold: {}", stop_threshold));
+            buf.write_fmt(format_args!("Stop threshold: {}\n\n", stop_threshold));
         }
-        
-        self.right.push(String::new());
 
         // CPU Frequency Scaling
-        self.right.push("CPU Frequency Scaling".to_string());
-        self.right.push(String::new());
+        buf.write_str("CPU Frequency Scaling\n\n");
         
         if self.verbose {
-            self.right.push(format!("Current governor: {:?}", report.current_gov));
-            self.right.push(format!("EPP: {:?}", report.current_epp));
-            self.right.push(format!("EPB: {:?}", report.current_epb));
+            buf.write_fmt(format_args!("Current governor: {:?}\n", report.current_gov));
+            buf.write_fmt(format_args!("EPP: {:?}\n", report.current_epp));
+            buf.write_fmt(format_args!("EPB: {:?}\n", report.current_epb));
         } else {
             let current_gov = report.current_gov.as_deref().unwrap_or("Unknown");
-            self.right.push(format!("Current governor: {}", current_gov));
+            buf.write_fmt(format_args!("Current governor: {}\n", current_gov));
 
             if let Some(epp) = &report.current_epp {
-                self.right.push(format!("EPP: {}", epp));
+                buf.write_fmt(format_args!("EPP: {}\n", epp));
             } else {
-                self.right.push("EPP: Not supported".to_string());
+                buf.write_str("EPP: Not supported\n");
             }
 
             if let Some(epb) = &report.current_epb {
-                self.right.push(format!("EPB: {}", epb));
+                buf.write_fmt(format_args!("EPB: {}\n", epb));
             }
         }
 
         if self.suggestion {
             if let Some(sugg) = SystemInfo::governor_suggestion() {
                 if report.current_gov.as_deref() != Some(&sugg) {
-                    self.right.push(format!("Suggested governor: {}", sugg));
+                    buf.write_fmt(format_args!("Suggested governor: {}\n", sugg));
                 }
             }
         }
 
-        self.right.push(String::new());
+        buf.write_str("\n");
 
         // System Statistics
-        self.right.push("System Statistics".to_string());
-        self.right.push(String::new());
-        self.right.push(format!("CPU usage: {:.1}%", report.cpu_usage));
-        self.right.push(format!("System load: {:.2}", report.load));
+        buf.write_str("System Statistics\n\n");
+        buf.write_fmt(format_args!("CPU usage: {:.1}%\n", report.cpu_usage));
+        buf.write_fmt(format_args!("System load: {:.2}\n", report.load));
 
         if !report.cores_info.is_empty() {
             let avg_temp: f32 = report.cores_info.iter()
@@ -236,32 +283,32 @@ impl SystemMonitor {
             
             if temp_count > 0 {
                 let avg_temp = avg_temp / temp_count as f32;
-                self.right.push(format!("Average temp: {:.1} °C", avg_temp));
+                buf.write_fmt(format_args!("Average temp: {:.1} °C\n", avg_temp));
             }
         }
 
         if let Some((a, b, c)) = report.avg_load {
             let load_status = if report.load < 1.0 { "optimal" } else { "high" };
-            self.right.push(format!("Load {}: {:.2}, {:.2}, {:.2}", load_status, a, b, c));
+            buf.write_fmt(format_args!("Load {}: {:.2}, {:.2}, {:.2}\n", load_status, a, b, c));
         }
 
         // Turbo status
         if self.verbose {
-            self.right.push(format!("Turbo boost: {:?}", report.is_turbo_on));
+            buf.write_fmt(format_args!("Turbo boost: {:?}\n", report.is_turbo_on));
         } else {
             let turbo_status = match (report.is_turbo_on.0, report.is_turbo_on.1) {
                 (Some(on), _) => if on { "On" } else { "Off" }.to_string(),
                 (None, Some(auto)) => format!("Auto ({})", if auto { "enabled" } else { "disabled" }),
                 _ => "Unknown".to_string(),
             };
-            self.right.push(format!("Turbo boost: {}", turbo_status));
+            buf.write_fmt(format_args!("Turbo boost: {}\n", turbo_status));
         }
 
         if self.suggestion {
             if let Some(on) = report.is_turbo_on.0 {
-                let sugg = SystemInfo::turbo_on_suggestion(&mut self.sys);
+                let sugg = SystemInfo::turbo_on_suggestion(&self.sys);
                 if sugg != on {
-                    self.right.push(format!("Suggested turbo: {}", if sugg { "On" } else { "Off" }));
+                    buf.write_fmt(format_args!("Suggested turbo: {}\n", if sugg { "On" } else { "Off" }));
                 }
             }
         }
@@ -283,9 +330,12 @@ impl SystemMonitor {
                 let left = self.left.get(i).cloned().unwrap_or_default();
                 let right = self.right.get(i).cloned().unwrap_or_default();
                 
-                // Truncate if too long
+                // OPTIMIZED: More efficient truncation
                 let left_truncated = if left.len() > half {
-                    format!("{}...", &left[..half-3])
+                    let mut s = String::with_capacity(half);
+                    s.push_str(&left[..half-3]);
+                    s.push_str("...");
+                    s
                 } else {
                     left
                 };
@@ -295,5 +345,29 @@ impl SystemMonitor {
             
             thread::sleep(Duration::from_secs(2));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_string_buffer() {
+        let mut buf = StringBuffer::new();
+        buf.write_str("Hello\n");
+        buf.write_fmt(format_args!("World {}\n", 123));
+        let lines = buf.to_lines();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "Hello");
+        assert_eq!(lines[1], "World 123");
+    }
+
+    #[test]
+    fn test_monitor_update() {
+        let mut monitor = SystemMonitor::new(ViewType::Monitor, false);
+        monitor.update();
+        assert!(!monitor.left.is_empty());
+        assert!(!monitor.right.is_empty());
     }
 }
