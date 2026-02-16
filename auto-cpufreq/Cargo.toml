@@ -54,30 +54,29 @@ default = []
 gui = ["gtk", "gdk", "gdk-pixbuf", "glib", "gio"]
 
 
-
 [profile.dev]
 opt-level = 0
 debug = true
 overflow-checks = true
-codegen-units = 256       
+codegen-units = 256
 
 [profile.release]
-opt-level = 3              
-lto = "fat"              
-codegen-units = 1       
-strip = true             
-panic = "unwind"          
-overflow-checks = true     
-debug = false             
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+overflow-checks = true
+debug = false
 
 [profile.release-size]
 inherits = "release"
-opt-level = "z"           
+opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"            
-overflow-checks = true    
+panic = "abort"
+overflow-checks = true
 
 [profile.release.package.sysinfo]
 opt-level = 3
@@ -85,4 +84,8 @@ codegen-units = 1
 
 [profile.release.package.nix]
 opt-level = 3
+codegen-units = 1
+
+[profile.dev.package."*"]
+opt-level = 2
 
