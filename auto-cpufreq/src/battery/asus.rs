@@ -1,7 +1,6 @@
-// src/battery/asus.rs
 use std::fs;
 use std::path::{Path, PathBuf};
-use anyhow::{Result, Context};
+use anyhow::Result;
 
 use super::{BatteryManager, get_batteries};
 use crate::config::Config;
@@ -28,8 +27,8 @@ impl BatteryManager for AsusManager {
             let start_threshold = get_threshold_value(config, "start");
             let stop_threshold = get_threshold_value(config, "stop");
             
-            set_battery(start_threshold, ThresholdMode::Start, &bat)?;
-            set_battery(stop_threshold, ThresholdMode::Stop, &bat)?;
+            set_battery(start_threshold, ThresholdMode::Start.as_str(), &bat)?;
+            set_battery(stop_threshold, ThresholdMode::Stop.as_str(), &bat)?;
         }
         
         Ok(())
@@ -92,26 +91,33 @@ fn get_threshold_value(config: &Config, mode: &str) -> u8 {
     })
 }
 
-fn set_battery(value: u8, mode: ThresholdMode, battery: &str) -> Result<()> {
-    let primary = mode.primary_path(battery);
-    let fallback = mode.fallback_path(battery);
-    
-    let path = if primary.exists() {
-        primary
-    } else if fallback.exists() {
-        fallback
-    } else {
-        println!("WARNING: {} does NOT exist", primary.display());
+fn set_battery(value: u8, mode: &str, battery: &str) -> Result<()> {
+    let file_path = PathBuf::from(format!(
+        "{}{}/charge_{}_threshold",
+        POWER_SUPPLY_DIR, battery, mode
+    ));
+
+    if !file_path.exists() {
+        println!("WARNING: {} does NOT exist", file_path.display());
         return Ok(());
-    };
-    
-    // Using echo | tee approach like original Python
-    std::process::Command::new("sh")
+    }
+
+    match std::process::Command::new("sh")
         .arg("-c")
-        .arg(format!("echo {} | tee {}", value, path.display()))
+        .arg(format!("echo {} | tee {}", value, file_path.display()))
         .output()
-        .with_context(|| format!("Failed to set battery threshold"))?;
-    
+    {
+        Ok(output) => {
+            if !output.status.success() {
+                println!("WARNING: Failed to set {} threshold for {}", mode, battery);
+                println!("  stderr: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        Err(e) => {
+            println!("WARNING: Command failed for {} threshold: {}", mode, e);
+        }
+    }
+
     Ok(())
 }
 

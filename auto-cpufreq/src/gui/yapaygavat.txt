@@ -1,0 +1,5673 @@
+
+--- FILE: ./battery/asus.rs ---
+
+// src/battery/asus.rs
+use std::fs;
+use std::path::{Path, PathBuf};
+use anyhow::{Result, Context};
+
+use super::{BatteryManager, get_batteries};
+use crate::config::Config;
+
+const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply/";
+
+pub struct AsusManager;
+
+impl BatteryManager for AsusManager {
+    fn setup(&self, config: &Config) -> Result<()> {
+        // Check if thresholds are enabled
+        if !config.get_bool("battery", "enable_thresholds").unwrap_or(false) {
+            return Ok(());
+        }
+
+        if !Path::new(POWER_SUPPLY_DIR).exists() {
+            println!("WARNING {} does NOT exist", POWER_SUPPLY_DIR);
+            return Ok(());
+        }
+
+        let batteries = get_batteries()?;
+        
+        for bat in batteries {
+            let start_threshold = get_threshold_value(config, "start");
+            let stop_threshold = get_threshold_value(config, "stop");
+            
+            set_battery(start_threshold, ThresholdMode::Start, &bat)?;
+            set_battery(stop_threshold, ThresholdMode::Stop, &bat)?;
+        }
+        
+        Ok(())
+    }
+
+    fn print_thresholds(&self) -> Result<()> {
+        let batteries = get_batteries()?;
+        
+        println!("\n{}\n", "-".repeat(32) + " Battery Info " + &"-".repeat(33));
+        println!("battery count = {}", batteries.len());
+        
+        for bat in &batteries {
+            print_battery_threshold(bat, ThresholdMode::Start);
+            print_battery_threshold(bat, ThresholdMode::Stop);
+        }
+        
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ThresholdMode {
+    Start,
+    Stop,
+}
+
+impl ThresholdMode {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+        }
+    }
+
+    fn fallback_str(&self) -> &str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "end",
+        }
+    }
+
+    fn primary_path(&self, battery: &str) -> PathBuf {
+        PathBuf::from(format!(
+            "{}{}/charge_{}_threshold",
+            POWER_SUPPLY_DIR, battery, self.as_str()
+        ))
+    }
+
+    fn fallback_path(&self, battery: &str) -> PathBuf {
+        PathBuf::from(format!(
+            "{}{}/charge_control_{}_threshold",
+            POWER_SUPPLY_DIR, battery, self.fallback_str()
+        ))
+    }
+}
+
+fn get_threshold_value(config: &Config, mode: &str) -> u8 {
+    config.get_threshold(mode).unwrap_or_else(|_| {
+        if mode == "start" { 0 } else { 100 }
+    })
+}
+
+fn set_battery(value: u8, mode: ThresholdMode, battery: &str) -> Result<()> {
+    let primary = mode.primary_path(battery);
+    let fallback = mode.fallback_path(battery);
+    
+    let path = if primary.exists() {
+        primary
+    } else if fallback.exists() {
+        fallback
+    } else {
+        println!("WARNING: {} does NOT exist", primary.display());
+        return Ok(());
+    };
+    
+    // Using echo | tee approach like original Python
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("echo {} | tee {}", value, path.display()))
+        .output()
+        .with_context(|| format!("Failed to set battery threshold"))?;
+    
+    Ok(())
+}
+
+fn print_battery_threshold(battery: &str, mode: ThresholdMode) {
+    let primary = mode.primary_path(battery);
+    let fallback = mode.fallback_path(battery);
+    
+    if primary.exists() {
+        match fs::read_to_string(&primary) {
+            Ok(val) => println!("{} {} threshold = {}", battery, mode.as_str(), val.trim()),
+            Err(e) => println!("ERROR: failed to read battery {} thresholds: {}", battery, e),
+        }
+    } else if fallback.exists() {
+        match fs::read_to_string(&fallback) {
+            Ok(val) => println!("{} {} threshold = {}", battery, mode.as_str(), val.trim()),
+            Err(e) => println!("ERROR: failed to read battery {} thresholds: {}", battery, e),
+        }
+    } else {
+        println!("{} {} threshold: file not found", battery, mode.as_str());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_threshold_mode_strings() {
+        assert_eq!(ThresholdMode::Start.as_str(), "start");
+        assert_eq!(ThresholdMode::Stop.as_str(), "stop");
+        assert_eq!(ThresholdMode::Stop.fallback_str(), "end");
+    }
+}
+
+
+
+--- FILE: ./battery/ideapad_acpi.rs ---
+
+// src/battery/ideapad_acpi.rs
+
+use std::path::{Path, PathBuf};
+use anyhow::{Result, Context};
+
+use super::{BatteryManager, get_batteries};
+use crate::config::Config;
+
+const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply/";
+
+pub struct IdeapadAcpiManager;
+
+impl BatteryManager for IdeapadAcpiManager {
+    fn setup(&self, config: &Config) -> Result<()> {
+        if !config.get_bool("battery", "enable_thresholds").unwrap_or(false) {
+            return Ok(());
+        }
+
+        if !Path::new(POWER_SUPPLY_DIR).exists() {
+            println!("WARNING: could NOT access {}", POWER_SUPPLY_DIR);
+            return Ok(());
+        }
+
+        let batteries = get_batteries()?;
+        
+        for bat in batteries {
+            let start_threshold = get_threshold_value(config, "start");
+            let stop_threshold = get_threshold_value(config, "stop");
+            
+            set_battery(start_threshold, "start", &bat)?;
+            set_battery(stop_threshold, "stop", &bat)?;
+        }
+        
+        Ok(())
+    }
+
+    fn print_thresholds(&self) -> Result<()> {
+        let batteries = get_batteries()?;
+        
+        println!("\n{}\n", "-".repeat(32) + " Battery Info " + &"-".repeat(33));
+        println!("battery count = {}", batteries.len());
+        
+        for bat in &batteries {
+            match read_threshold(bat, "start") {
+                Ok(val) => println!("{} start threshold = {}", bat, val),
+                Err(e) => println!("ERROR: failed to read battery {} thresholds: {}", bat, e),
+            }
+            
+            match read_threshold(bat, "stop") {
+                Ok(val) => println!("{} stop threshold = {}", bat, val),
+                Err(e) => println!("ERROR: failed to read battery {} thresholds: {}", bat, e),
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+fn get_threshold_value(config: &Config, mode: &str) -> u8 {
+    config.get_threshold(mode).unwrap_or_else(|_| {
+        if mode == "start" { 0 } else { 100 }
+    })
+}
+
+fn set_battery(value: u8, mode: &str, battery: &str) -> Result<()> {
+    let path = PathBuf::from(format!(
+        "{}{}/charge_{}_threshold",
+        POWER_SUPPLY_DIR, battery, mode
+    ));
+    
+    if !path.exists() {
+        println!("WARNING: {} does NOT exist", path.display());
+        return Ok(());
+    }
+    
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("echo {} | tee {}", value, path.display()))
+        .output()
+        .with_context(|| format!("Failed to set battery threshold"))?;
+    
+    Ok(())
+}
+
+fn read_threshold(battery: &str, mode: &str) -> Result<String> {
+    let path = PathBuf::from(format!(
+        "{}{}/charge_{}_threshold",
+        POWER_SUPPLY_DIR, battery, mode
+    ));
+    
+    std::process::Command::new("cat")
+        .arg(&path)
+        .output()
+        .with_context(|| format!("Failed to read threshold from {:?}", path))
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+
+
+--- FILE: ./battery/ideapad_laptop.rs ---
+
+// src/battery/ideapad_laptop.rs
+
+use std::path::PathBuf;
+use anyhow::{Result, Context};
+
+use super::{BatteryManager, get_batteries};
+use crate::config::Config;
+
+const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply/";
+const CONSERVATION_MODE_FILE: &str = 
+    "/sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/conservation_mode";
+
+pub struct IdeapadLaptopManager;
+
+impl BatteryManager for IdeapadLaptopManager {
+    fn setup(&self, config: &Config) -> Result<()> {
+        if !config.get_bool("battery", "enable_thresholds").unwrap_or(false) {
+            return Ok(());
+        }
+
+        let batteries = get_batteries()?;
+
+        // Check conservation mode setting
+        if let Ok(Some(mode)) = config.get_string("battery", "ideapad_laptop_conservation_mode") {
+            match mode.as_str() {
+                "true" => {
+                    conservation_mode(1)?;
+                    return Ok(());
+                }
+                "false" => {
+                    conservation_mode(0)?;
+                }
+                _ => {}
+            }
+        }
+
+        // Only set thresholds if conservation mode is off
+        if !check_conservation_mode()? {
+            for bat in batteries {
+                let start_threshold = get_threshold_value(config, "start");
+                let stop_threshold = get_threshold_value(config, "stop");
+                
+                set_battery(start_threshold, "start", &bat)?;
+                set_battery(stop_threshold, "stop", &bat)?;
+            }
+        } else {
+            println!("conservation mode is enabled unable to set thresholds");
+        }
+        
+        Ok(())
+    }
+
+    fn print_thresholds(&self) -> Result<()> {
+        if check_conservation_mode()? {
+            println!("conservation mode is on");
+            return Ok(());
+        }
+
+        let batteries = get_batteries()?;
+        
+        println!("\n{}\n", "-".repeat(32) + " Battery Info " + &"-".repeat(33));
+        println!("battery count = {}", batteries.len());
+        
+        for bat in &batteries {
+            match read_threshold(bat, "start") {
+                Ok(val) => println!("{} start threshold = {}", bat, val),
+                Err(e) => println!("ERROR: failed to read battery {} thresholds: {}", bat, e),
+            }
+            
+            match read_threshold(bat, "stop") {
+                Ok(val) => println!("{} stop threshold = {}", bat, val),
+                Err(e) => println!("ERROR: failed to read battery {} thresholds: {}", bat, e),
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+fn get_threshold_value(config: &Config, mode: &str) -> u8 {
+    config.get_threshold(mode).unwrap_or_else(|_| {
+        if mode == "start" { 0 } else { 100 }
+    })
+}
+
+fn set_battery(value: u8, mode: &str, battery: &str) -> Result<()> {
+    let path = PathBuf::from(format!(
+        "{}{}/charge_{}_threshold",
+        POWER_SUPPLY_DIR, battery, mode
+    ));
+    
+    if !path.exists() {
+        println!("WARNING: {} does NOT exist", path.display());
+        return Ok(());
+    }
+    
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("echo {} | tee {}", value, path.display()))
+        .output()
+        .with_context(|| format!("Failed to set battery threshold"))?;
+    
+    Ok(())
+}
+
+fn read_threshold(battery: &str, mode: &str) -> Result<String> {
+    let path = PathBuf::from(format!(
+        "{}{}/charge_{}_threshold",
+        POWER_SUPPLY_DIR, battery, mode
+    ));
+    
+    std::process::Command::new("cat")
+        .arg(&path)
+        .output()
+        .with_context(|| format!("Failed to read threshold"))
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn conservation_mode(value: u8) -> Result<()> {
+    match std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("echo {} | tee {}", value, CONSERVATION_MODE_FILE))
+        .output()
+    {
+        Ok(_) => {
+            println!("conservation_mode is {}", value);
+            Ok(())
+        }
+        Err(e) => {
+            println!("unable to set conservation mode");
+            Err(e.into())
+        }
+    }
+}
+
+fn check_conservation_mode() -> Result<bool> {
+    match std::process::Command::new("cat")
+        .arg(CONSERVATION_MODE_FILE)
+        .output()
+    {
+        Ok(output) => {
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            match value.as_str() {
+                "1" => Ok(true),
+                "0" => Ok(false),
+                _ => {
+                    println!("could not get value from conservation mode");
+                    Ok(false)
+                }
+            }
+        }
+        Err(_) => {
+            println!("could not get the value from conservation mode");
+            Ok(false)
+        }
+    }
+}
+
+
+
+--- FILE: ./battery/mod.rs ---
+
+// src/battery/mod.rs
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+use anyhow::Result;
+
+pub mod asus;
+pub mod ideapad_acpi;
+pub mod ideapad_laptop;
+pub mod thinkpad;
+
+use crate::config::Config;
+
+const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply/";
+
+/// Detect which laptop module is loaded
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LaptopModule {
+    IdeapadAcpi,
+    IdeapadLaptop,
+    ThinkpadAcpi,
+    AsusWmi,
+    None,
+}
+
+impl LaptopModule {
+    pub fn detect() -> Self {
+        if is_module_loaded("ideapad_acpi") {
+            Self::IdeapadAcpi
+        } else if is_module_loaded("ideapad_laptop") {
+            Self::IdeapadLaptop
+        } else if is_module_loaded("thinkpad_acpi") {
+            Self::ThinkpadAcpi
+        } else if is_module_loaded("asus_wmi") {
+            Self::AsusWmi
+        } else {
+            Self::None
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Self::IdeapadAcpi => "ideapad_acpi",
+            Self::IdeapadLaptop => "ideapad_laptop",
+            Self::ThinkpadAcpi => "thinkpad_acpi",
+            Self::AsusWmi => "asus_wmi",
+            Self::None => "none",
+        }
+    }
+}
+
+fn is_module_loaded(module: &str) -> bool {
+    Command::new("lsmod")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|stdout| stdout.contains(module))
+        .unwrap_or(false)
+}
+
+/// Get list of batteries in the system
+pub fn get_batteries() -> Result<Vec<String>> {
+    let power_dir = Path::new(POWER_SUPPLY_DIR);
+    
+    if !power_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut batteries = Vec::new();
+    
+    for entry in fs::read_dir(power_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        
+        if name_str.starts_with("BAT") {
+            batteries.push(name_str.to_string());
+        }
+    }
+    
+    batteries.sort();
+    Ok(batteries)
+}
+
+/// Common trait for battery threshold management
+pub trait BatteryManager {
+    fn setup(&self, config: &Config) -> Result<()>;
+    fn print_thresholds(&self) -> Result<()>;
+}
+
+/// Main battery setup function - delegates to appropriate module
+pub fn battery_setup(config: &Config) -> Result<()> {
+    let module = LaptopModule::detect();
+    
+    match module {
+        LaptopModule::IdeapadAcpi => {
+            ideapad_acpi::IdeapadAcpiManager.setup(config)
+        }
+        LaptopModule::IdeapadLaptop => {
+            ideapad_laptop::IdeapadLaptopManager.setup(config)
+        }
+        LaptopModule::ThinkpadAcpi => {
+            thinkpad::ThinkpadManager.setup(config)
+        }
+        LaptopModule::AsusWmi => {
+            asus::AsusManager.setup(config)
+        }
+        LaptopModule::None => {
+            Ok(()) // No battery management needed
+        }
+    }
+}
+
+/// Print battery thresholds
+pub fn battery_get_thresholds() -> Result<()> {
+    let module = LaptopModule::detect();
+    
+    match module {
+        LaptopModule::IdeapadAcpi => {
+            ideapad_acpi::IdeapadAcpiManager.print_thresholds()
+        }
+        LaptopModule::IdeapadLaptop => {
+            ideapad_laptop::IdeapadLaptopManager.print_thresholds()
+        }
+        LaptopModule::ThinkpadAcpi => {
+            thinkpad::ThinkpadManager.print_thresholds()
+        }
+        LaptopModule::AsusWmi => {
+            asus::AsusManager.print_thresholds()
+        }
+        LaptopModule::None => {
+            Ok(()) // Nothing to print
+        }
+    }
+}
+
+
+
+--- FILE: ./battery/thinkpad.rs ---
+
+// src/battery/thinkpad.rs
+
+use std::path::{Path, PathBuf};
+use anyhow::{Result, Context};
+
+use super::{BatteryManager, get_batteries};
+use crate::config::Config;
+
+const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply/";
+
+pub struct ThinkpadManager;
+
+impl BatteryManager for ThinkpadManager {
+    fn setup(&self, config: &Config) -> Result<()> {
+        if !config.get_bool("battery", "enable_thresholds").unwrap_or(false) {
+            return Ok(());
+        }
+
+        if !Path::new(POWER_SUPPLY_DIR).exists() {
+            println!("WARNING {} does NOT exist", POWER_SUPPLY_DIR);
+            return Ok(());
+        }
+
+        let batteries = get_batteries()?;
+        
+        for bat in batteries {
+            let start_threshold = get_threshold_value(config, "start");
+            let stop_threshold = get_threshold_value(config, "stop");
+            
+            set_battery(start_threshold, "start", &bat)?;
+            set_battery(stop_threshold, "stop", &bat)?;
+        }
+        
+        Ok(())
+    }
+
+    fn print_thresholds(&self) -> Result<()> {
+        let batteries = get_batteries()?;
+        
+        println!("\n{}\n", "-".repeat(32) + " Battery Info " + &"-".repeat(33));
+        println!("battery count = {}", batteries.len());
+        
+        for bat in &batteries {
+            match read_threshold(bat, "start") {
+                Ok(val) => println!("{} start threshold = {}", bat, val),
+                Err(e) => println!("ERROR: failed to read battery {} thresholds: {}", bat, e),
+            }
+            
+            match read_threshold(bat, "stop") {
+                Ok(val) => println!("{} stop threshold = {}", bat, val),
+                Err(e) => println!("ERROR: failed to read battery {} thresholds: {}", bat, e),
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+fn get_threshold_value(config: &Config, mode: &str) -> u8 {
+    config.get_threshold(mode).unwrap_or_else(|_| {
+        if mode == "start" { 0 } else { 100 }
+    })
+}
+
+fn set_battery(value: u8, mode: &str, battery: &str) -> Result<()> {
+    let path = PathBuf::from(format!(
+        "{}{}/charge_{}_threshold",
+        POWER_SUPPLY_DIR, battery, mode
+    ));
+    
+    if !path.exists() {
+        println!("WARNING: {} does NOT exist", path.display());
+        return Ok(());
+    }
+    
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("echo {} | tee {}", value, path.display()))
+        .output()
+        .with_context(|| format!("Failed to set battery threshold"))?;
+    
+    Ok(())
+}
+
+fn read_threshold(battery: &str, mode: &str) -> Result<String> {
+    let path = PathBuf::from(format!(
+        "{}{}/charge_{}_threshold",
+        POWER_SUPPLY_DIR, battery, mode
+    ));
+    
+    std::process::Command::new("cat")
+        .arg(&path)
+        .output()
+        .with_context(|| format!("Failed to read threshold"))
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+
+
+--- FILE: ./bin/auto_cpufreq_gtk.rs ---
+
+// src/bin/auto_cpufreq_gtk.rs
+//! GTK frontend binary. Delegates to `auto_cpufreq::gui::app::run_app()` when
+//! built with the `gui` feature.
+
+#[cfg(feature = "gui")]
+fn main() {
+    auto_cpufreq::gui::app::run_app();
+}
+
+#[cfg(not(feature = "gui"))]
+fn main() {
+    eprintln!("GUI support not compiled. Build with --features gui");
+    std::process::exit(1);
+}
+
+
+
+--- FILE: ./bin/auto_cpufreq_tray.rs ---
+
+fn main() {
+    auto_cpufreq::gui::tray::TrayApp::run();
+    loop {
+        std::thread::park();
+    }
+}
+
+
+
+--- FILE: ./bin/auto_cpufreq.rs ---
+
+// src/bin/auto_cpufreq.rs
+
+use anyhow::Result;
+use clap::Parser;
+use auto_cpufreq::config::{CONFIG, find_config_file};
+use auto_cpufreq::core::*;
+use auto_cpufreq::globals::*;
+use auto_cpufreq::power_helper::*;
+use auto_cpufreq::battery;
+use auto_cpufreq::modules::{SystemMonitor, ViewType};
+use std::thread;
+use std::time::Duration;
+
+use auto_cpufreq::core::footer;
+
+#[derive(Parser, Debug)]
+#[command(name = "auto-cpufreq")]
+#[command(about = "Automatic CPU speed & power optimizer for Linux", long_about = None)]
+struct Args {
+    /// Monitor and see suggestions for CPU optimizations
+    #[arg(long)]
+    monitor: bool,
+
+    /// Monitor and make (temp.) suggested CPU optimizations
+    #[arg(long)]
+    live: bool,
+
+    #[arg(long, hide = true)]
+    daemon: bool,
+
+    /// Install daemon for (permanent) automatic CPU optimizations
+    #[arg(long)]
+    install: bool,
+
+    /// Update daemon and package
+    #[arg(long, value_name = "PATH")]
+    update: Option<Option<String>>,
+
+    /// Remove daemon
+    #[arg(long)]
+    remove: bool,
+
+    /// Force use of either "powersave" or "performance" governors
+    #[arg(long, value_name = "GOVERNOR")]
+    force: Option<String>,
+
+    /// Force use of CPU turbo mode
+    #[arg(long, value_name = "MODE")]
+    turbo: Option<String>,
+
+    /// Use config file at defined path
+    #[arg(long, value_name = "PATH")]
+    config: Option<String>,
+
+    /// View live stats of CPU optimizations
+    #[arg(long)]
+    stats: bool,
+
+    #[arg(long, hide = true)]
+    get_state: bool,
+
+    /// Turn off Bluetooth on boot
+    #[arg(long)]
+    bluetooth_boot_off: bool,
+
+    /// Turn on Bluetooth on boot
+    #[arg(long)]
+    bluetooth_boot_on: bool,
+
+    /// Show debug info
+    #[arg(long)]
+    debug: bool,
+
+    /// Show verbose/detailed output (use with --monitor, --live, --stats)
+    #[arg(long, short)]
+    verbose: bool,
+
+    /// Show currently installed version
+    #[arg(long)]
+    version: bool,
+
+    /// Support the project
+    #[arg(long)]
+    donate: bool,
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+
+    // Display info if config file is used
+    let config_path = find_config_file(args.config.as_deref());
+    CONFIG.set_path(config_path.clone())?;
+
+    fn config_info_dialog() {
+        if CONFIG.has_config() {
+            println!("\nUsing settings defined in {} file", CONFIG.get_path().display());
+        }
+    }
+
+    // If no arguments provided, show help
+    if !has_any_flag(&args) {
+        println!("\n{}\n", "-".repeat(32) + " auto-cpufreq " + &"-".repeat(33));
+        println!("Automatic CPU speed & power optimizer for Linux");
+        println!("\nExample usage:\nauto-cpufreq --monitor");
+        println!("\n-----\n");
+        
+        return Ok(());
+    }
+
+    // Handle force governor override
+    if let Some(ref force_val) = args.force {
+        not_running_daemon_check()?;
+        root_check()?;
+        let state = AutoCpuFreqState::new();
+        set_override(&state, force_val)?;
+    }
+
+    // Handle turbo override
+    if let Some(ref turbo_val) = args.turbo {
+        not_running_daemon_check()?;
+        root_check()?;
+        let state = AutoCpuFreqState::new();
+        set_turbo_override(&state, turbo_val)?;
+    }
+
+    if args.monitor {
+        root_check()?;
+        battery::battery_setup(&CONFIG)?;
+        
+        if *IS_INSTALLED_WITH_SNAP {
+            gnome_power_detect_snap();
+            tlp_service_detect_snap();
+        } else {
+            gnome_power_detect()?;
+            tlp_service_detect()?;
+        }
+
+        if *IS_INSTALLED_WITH_SNAP || *TLP_STAT_EXISTS || 
+           (*SYSTEMCTL_EXISTS && gnome_power_status()?) {
+            println!("press Enter to continue or Ctrl + C to exit...");
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+        }
+
+        let mut monitor = SystemMonitor::new_with_verbose(ViewType::Monitor, true, args.verbose);
+        monitor.run_blocking();
+        
+    } else if args.live {
+        root_check()?;
+        battery::battery_setup(&CONFIG)?;
+        
+        if *IS_INSTALLED_WITH_SNAP {
+            gnome_power_detect_snap();
+            tlp_service_detect_snap();
+        } else {
+            gnome_power_detect_install()?;
+            gnome_power_stop_live()?;
+            tuned_stop_live()?;
+            tlp_service_detect()?;
+        }
+
+        if *IS_INSTALLED_WITH_SNAP || *TLP_STAT_EXISTS || 
+           (*SYSTEMCTL_EXISTS && gnome_power_status()?) {
+            println!("press Enter to continue or Ctrl + C to exit...");
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+        }
+
+        cpufreqctl()?;
+
+        // Spawn daemon thread
+        let daemon_handle = thread::spawn(|| {
+            loop {
+                thread::sleep(Duration::from_secs(1));
+                // set_autofreq() would be called here
+            }
+        });
+
+        let mut monitor = SystemMonitor::new_with_verbose(ViewType::Live, false, args.verbose);
+        monitor.run_blocking();
+        
+        daemon_handle.join().unwrap();
+
+    } else if args.daemon {
+        config_info_dialog();
+        root_check()?;
+        // file_stats()?; // TODO: implement
+        
+        if *IS_INSTALLED_WITH_SNAP {
+            gnome_power_detect_snap();
+            tlp_service_detect_snap();
+        } else {
+            gnome_power_detect()?;
+            tlp_service_detect()?;
+        }
+
+        battery::battery_setup(&CONFIG)?;
+
+        loop {
+            footer(79);
+            // gov_check()?;
+            cpufreqctl()?;
+            distro_info()?;
+            sysinfo()?;
+            // set_autofreq()?;
+            countdown(2);
+        }
+
+    } else if args.install {
+        root_check()?;
+        
+        if *IS_INSTALLED_WITH_SNAP {
+            gnome_power_detect_snap();
+            tlp_service_detect_snap();
+            bluetooth_notif_snap();
+            // gov_check()?;
+            
+            std::process::Command::new("snapctl")
+                .args(&["set", "daemon=enabled"])
+                .status()?;
+            
+            std::process::Command::new("snapctl")
+                .args(&["start", "--enable", "auto-cpufreq"])
+                .status()?;
+            
+            println!("\nauto-cpufreq daemon installed and started");
+        } else {
+            gnome_power_detect()?;
+            tlp_service_detect()?;
+            // gov_check()?;
+            
+            // Install daemon using appropriate init system
+            install_daemon()?;
+            
+            println!("\nauto-cpufreq daemon installed and started");
+            println!("\nTo view live stats, run:\nauto-cpufreq --stats");
+        }
+
+    } else if let Some(update_path) = args.update {
+        root_check()?;
+        
+        let _custom_dir = update_path.unwrap_or_else(|| "/opt/auto-cpufreq/source".to_string());
+
+        if *IS_INSTALLED_WITH_SNAP {
+            println!("\n{}\n", "=".repeat(80));
+            println!("Detected auto-cpufreq was installed using snap");
+            println!("Please update using snap package manager, i.e: `sudo snap refresh auto-cpufreq`.");
+            println!("\n{}\n", "=".repeat(80));
+        } else if *IS_INSTALLED_WITH_AUR {
+            println!("\n{}\n", "=".repeat(80));
+            println!("Arch-based distribution with AUR support detected.");
+            println!("Please refresh auto-cpufreq using your AUR helper.");
+            println!("\n{}\n", "=".repeat(80));
+        } else {
+            let is_new_update = check_for_update()?;
+            if !is_new_update {
+                return Ok(());
+            }
+
+            println!("\nDo you want to update auto-cpufreq to the latest release? [Y/n]: ");
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            
+            let ans = input.trim().to_lowercase();
+            if ans.is_empty() || ans == "y" || ans == "yes" {
+                // First remove the old daemon
+                remove_daemon()?;
+                
+                // TODO: implement new_update(&custom_dir)?;
+                println!("\nRe-enabling daemon...");
+                
+                // Reinstall daemon
+                install_daemon()?;
+                
+                println!("\nauto-cpufreq is updated to the latest version");
+                app_version();
+            } else {
+                println!("Update aborted");
+            }
+        }
+
+    } else if args.remove {
+        root_check()?;
+        
+        if *IS_INSTALLED_WITH_SNAP {
+            std::process::Command::new("snapctl")
+                .args(&["set", "daemon=disabled"])
+                .status()?;
+            
+            std::process::Command::new("snapctl")
+                .args(&["stop", "--disable", "auto-cpufreq"])
+                .status()?;
+
+            gnome_power_rm_reminder_snap();
+            
+            println!("\nauto-cpufreq daemon removed");
+        } else {
+            // Remove daemon using appropriate init system
+            remove_daemon()?;
+            
+            println!("\nauto-cpufreq daemon removed");
+        }
+
+    } else if args.stats {
+        not_running_daemon_check()?;
+        config_info_dialog();
+        
+        if *IS_INSTALLED_WITH_SNAP {
+            gnome_power_detect_snap();
+            tlp_service_detect_snap();
+        } else {
+            gnome_power_detect()?;
+            tlp_service_detect()?;
+        }
+
+        if *IS_INSTALLED_WITH_SNAP || *TLP_STAT_EXISTS || 
+           (*SYSTEMCTL_EXISTS && gnome_power_status()?) {
+            println!("press Enter to continue or Ctrl + C to exit...");
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+        }
+
+        let mut monitor = SystemMonitor::new_with_verbose(ViewType::Stats, false, args.verbose);
+        monitor.update();
+        
+        let rows = std::cmp::max(monitor.left.len(), monitor.right.len());
+        let width = 80usize;
+        let half = width / 2 - 1;
+        for i in 0..rows {
+            let left = monitor.left.get(i).cloned().unwrap_or_default();
+            let right = monitor.right.get(i).cloned().unwrap_or_default();
+            println!("{:<half$} │ {}", left, right, half=half);
+        }
+
+    } else if args.get_state {
+        not_running_daemon_check()?;
+        let state = AutoCpuFreqState::new();
+        let override_val = get_override(&state);
+        println!("{}", override_val.to_str());
+
+    } else if args.bluetooth_boot_off {
+        if *IS_INSTALLED_WITH_SNAP {
+            footer(79);
+            bluetooth_notif_snap();
+            footer(79);
+        } else {
+            footer(79);
+            root_check()?;
+            bluetooth_disable()?;
+            footer(79);
+        }
+
+    } else if args.bluetooth_boot_on {
+        if *IS_INSTALLED_WITH_SNAP {
+            footer(79);
+            bluetooth_on_notif_snap();
+            footer(79);
+        } else {
+            footer(79);
+            root_check()?;
+            bluetooth_enable()?;
+            footer(79);
+        }
+
+    } else if args.debug {
+        config_info_dialog();
+        root_check()?;
+        battery::battery_get_thresholds()?;
+        cpufreqctl()?;
+        footer(79);
+        distro_info()?;
+        sysinfo()?;
+        println!();
+        app_version();
+        println!();
+        // python_info(); // TODO: implement if needed
+        println!();
+        // device_info(); // TODO: implement if needed
+        println!("Battery is: {}charging", if charging()? { "" } else { "dis" });
+        println!();
+        // app_res_use(); // TODO: implement if needed
+        get_load();
+        print_current_gov();
+        get_turbo();
+        footer(79);
+
+    } else if args.version {
+        footer(79);
+        distro_info()?;
+        app_version();
+        footer(79);
+
+    } else if args.donate {
+        footer(79);
+        println!("If auto-cpufreq helped you out and you find it useful ...\n");
+        println!("Show your appreciation by donating!");
+        println!("https://github.com/AdnanHodzic/auto-cpufreq#donate");
+        footer(79);
+    }
+
+    Ok(())
+}
+
+fn has_any_flag(args: &Args) -> bool {
+    args.monitor || args.live || args.daemon || args.install || 
+    args.update.is_some() || args.remove || args.force.is_some() || 
+    args.turbo.is_some() || args.stats || args.get_state || 
+    args.bluetooth_boot_off || args.bluetooth_boot_on || 
+    args.debug || args.version || args.donate
+}
+
+
+
+--- FILE: ./config/config_event_handler.rs ---
+
+// src/config/config_event_handler.rs
+
+// This module is now integrated into config.rs using the notify crate
+// The Python version used pyinotify, but we use notify which is cross-platform
+
+pub struct ConfigEventHandler;
+
+impl ConfigEventHandler {
+    pub fn new() -> Self {
+        ConfigEventHandler
+    }
+}
+
+impl Default for ConfigEventHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+
+
+--- FILE: ./config/mod.rs ---
+
+// src/config/mod.rs
+
+pub mod config;
+pub mod config_event_handler;
+
+pub use config::{Config, find_config_file, CONFIG};
+pub use config_event_handler::ConfigEventHandler;
+
+
+
+--- FILE: ./config/config.rs ---
+
+// src/config/config.rs
+
+use anyhow::{Result, bail};
+use notify::{Watcher, RecursiveMode};
+use notify::event::{EventKind, ModifyKind, CreateKind, RemoveKind};
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use configparser::ini::Ini;
+
+pub struct Config {
+    path: Arc<Mutex<PathBuf>>,
+    config: Arc<Mutex<Ini>>,
+    watcher: Arc<Mutex<Option<notify::RecommendedWatcher>>>,
+    last_reload: Arc<Mutex<Instant>>,  // For debouncing
+}
+
+impl Config {
+    pub fn new() -> Self {
+        Config {
+            path: Arc::new(Mutex::new(PathBuf::new())),
+            config: Arc::new(Mutex::new(Ini::new())),
+            watcher: Arc::new(Mutex::new(None)),
+            last_reload: Arc::new(Mutex::new(Instant::now())),
+        }
+    }
+
+    pub fn set_path(&self, path: PathBuf) -> Result<()> {
+        *self.path.lock().unwrap() = path.clone();
+        
+        if path.exists() {
+            self.update_config()?;
+        }
+
+        // Setup file watcher
+        self.setup_watcher(&path)?;
+
+        Ok(())
+    }
+
+    fn setup_watcher(&self, path: &Path) -> Result<()> {
+        let config_clone = Arc::clone(&self.config);
+        let path_clone = Arc::clone(&self.path);
+        let last_reload_clone = Arc::clone(&self.last_reload);
+
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            match res {
+                Ok(event) => {
+                    let should_update = matches!(
+                        event.kind,
+                        EventKind::Create(CreateKind::File) |
+                        EventKind::Modify(ModifyKind::Data(_)) |
+                        EventKind::Remove(RemoveKind::File)
+                    );
+
+                    if should_update {
+                        // Debouncing: Only reload if 500ms passed since last reload
+                        let should_reload = {
+                            let mut last = last_reload_clone.lock().unwrap();
+                            let now = Instant::now();
+                            if now.duration_since(*last) > Duration::from_millis(500) {
+                                *last = now;
+                                true
+                            } else {
+                                false
+                            }
+                        };
+
+                        if !should_reload {
+                            return;
+                        }
+
+                        let current_path = path_clone.lock().unwrap().clone();
+                        
+                        // Check if the event is for our config file
+                        for path in &event.paths {
+                            if path == &current_path || 
+                               path.with_extension("").with_extension("") == current_path.with_extension("").with_extension("") {
+                                // Try to load config with proper error handling
+                                let mut new_config = Ini::new();
+                                if let Some(path_str) = current_path.to_str() {
+                                    if new_config.load(path_str).is_ok() {
+                                        // Only update if lock is available (avoid panic)
+                                        if let Ok(mut config) = config_clone.lock() {
+                                            *config = new_config;
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Watch error: {:?}", e),
+            }
+        })?;
+
+        if let Some(parent) = path.parent() {
+            watcher.watch(parent, RecursiveMode::NonRecursive)?;
+        }
+
+        *self.watcher.lock().unwrap() = Some(watcher);
+
+        Ok(())
+    }
+
+    pub fn has_config(&self) -> bool {
+        self.path.lock().unwrap().exists()
+    }
+
+    pub fn get_path(&self) -> PathBuf {
+        self.path.lock().unwrap().clone()
+    }
+
+    pub fn update_config(&self) -> Result<()> {
+        let path = self.path.lock().unwrap().clone();
+        
+        let mut new_config = Ini::new();
+        match new_config.load(path.to_str().unwrap_or("")) {
+            Ok(_) => {
+                *self.config.lock().unwrap() = new_config;
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("The following error occurred while parsing the config file:\n{}", e);
+                // Don't propagate error - allow program to continue with empty config
+                Ok(())
+            }
+        }
+    }
+
+    pub fn get_string(&self, section: &str, key: &str) -> Result<Option<String>> {
+        let config = self.config.lock().unwrap();
+        Ok(config.get(section, key))
+    }
+
+    pub fn get_bool(&self, section: &str, key: &str) -> Result<bool> {
+        let value = self.get_string(section, key)?;
+        
+        match value.as_deref() {
+            Some("true") | Some("True") | Some("1") | Some("yes") | Some("Yes") => Ok(true),
+            Some("false") | Some("False") | Some("0") | Some("no") | Some("No") => Ok(false),
+            Some(v) => bail!("Invalid boolean value: {}", v),
+            None => Ok(false),
+        }
+    }
+
+    pub fn get_int(&self, section: &str, key: &str) -> Result<Option<i32>> {
+        let value = self.get_string(section, key)?;
+        
+        match value {
+            Some(s) => {
+                match s.parse() {
+                    Ok(v) => Ok(Some(v)),
+                    Err(e) => bail!("Failed to parse integer: {}", e),
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_threshold(&self, mode: &str) -> Result<u8> {
+        let key = match mode {
+            "start" => "charging_start_threshold",
+            "stop" => "charging_stop_threshold",
+            _ => bail!("Invalid threshold mode: {}", mode),
+        };
+
+        let value = self.get_int("battery", key)?;
+        
+        match value {
+            Some(v) if (0..=100).contains(&v) => Ok(v as u8),
+            Some(v) => bail!("Threshold value out of range (0-100): {}", v),
+            None => Ok(if mode == "start" { 0 } else { 100 }),
+        }
+    }
+
+    pub fn has_option(&self, section: &str, key: &str) -> bool {
+        self.config
+            .lock()
+            .unwrap()
+            .get(section, key)
+            .is_some()
+    }
+
+    pub fn get(&self, section: &str, key: &str, fallback: &str) -> String {
+        self.get_string(section, key)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| fallback.to_string())
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Thread-safe implementation
+unsafe impl Send for Config {}
+unsafe impl Sync for Config {}
+
+// Global config instance
+lazy_static::lazy_static! {
+    pub static ref CONFIG: Config = Config::new();
+}
+
+/// Find the config file to use
+/// 
+/// Look for a config file in the following prioritization order:
+/// 1. Command line argument
+/// 2. User config file
+/// 3. System config file
+pub fn find_config_file(args_config_file: Option<&str>) -> PathBuf {
+    // Get home directory
+    let home = get_home_dir();
+    
+    // Prepare paths
+    let user_config_dir = std::env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home.join(".config"));
+    
+    let user_config_file = user_config_dir.join("auto-cpufreq/auto-cpufreq.conf");
+    let system_config_file = PathBuf::from("/etc/auto-cpufreq.conf");
+
+    // (1) Command line argument was specified
+    if let Some(config_path) = args_config_file {
+        let path = PathBuf::from(config_path);
+        if path.is_file() {
+            return path;
+        } else {
+            eprintln!("Config file specified with '--config {}' not found.", config_path);
+            std::process::exit(1);
+        }
+    }
+    
+    // (2) User config file
+    if user_config_file.is_file() {
+        return user_config_file;
+    }
+    
+    // (3) System config file (default if nothing else is found)
+    system_config_file
+}
+
+fn get_home_dir() -> PathBuf {
+    // Try to get home directory from $SUDO_USER or $USER
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("getent passwd ${SUDO_USER:-$USER} | cut -d: -f6")
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let home = String::from_utf8_lossy(&output.stdout);
+            PathBuf::from(home.trim())
+        }
+        _ => {
+            // Fallback to HOME environment variable
+            std::env::var("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/root"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_new() {
+        let config = Config::new();
+        assert!(!config.has_config());
+    }
+
+    #[test]
+    fn test_get_threshold_defaults() {
+        let config = Config::new();
+        assert_eq!(config.get_threshold("start").unwrap(), 0);
+        assert_eq!(config.get_threshold("stop").unwrap(), 100);
+    }
+
+    #[test]
+    fn test_get_bool() {
+        let config = Config::new();
+        
+        // Test with no config file (should return false)
+        assert!(!config.get_bool("battery", "enable_thresholds").unwrap());
+    }
+
+    #[test]
+    fn test_thread_safety() {
+        use std::thread;
+        
+        let config = Config::new();
+        let config_arc = Arc::new(config);
+        
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let config_clone = Arc::clone(&config_arc);
+                thread::spawn(move || {
+                    let _ = config_clone.has_config();
+                })
+            })
+            .collect();
+        
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+}
+
+
+
+--- FILE: ./core.rs ---
+
+// src/core.rs
+use std::fs::{self, File};
+use std::io::{Write, BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use sysinfo::System;
+use chrono::Local;
+use anyhow::{Result, bail};
+
+// ============================================================================
+// Constants
+// ============================================================================
+const SCRIPTS_DIR: &str = "/usr/local/share/auto-cpufreq/scripts/";
+const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply/";
+const GITHUB: &str = "https://github.com/AdnanHodzic/auto-cpufreq";
+
+pub const ALL_GOVERNORS: &[&str] = &[
+    "performance", 
+    "ondemand", 
+    "conservative", 
+    "schedutil", 
+    "userspace", 
+    "powersave"
+];
+
+fn read_auto_cpufreq_file(sub_path: &str) -> String {
+    let path = format!("/usr/local/share/auto-cpufreq/scripts/{}", sub_path);
+    fs::read_to_string(&path).unwrap_or_else(|_| {
+        eprintln!("Warning: File {} not found!", path);
+        String::new()
+    })
+}
+
+pub fn install_script() -> String { read_auto_cpufreq_file("auto-cpufreq-install.sh") }
+pub fn remove_script() -> String { read_auto_cpufreq_file("auto-cpufreq-remove.sh") }
+pub fn cpufreqctl_script() -> String { read_auto_cpufreq_file("cpufreqctl.sh") }
+pub fn systemd_service() -> String { read_auto_cpufreq_file("auto-cpufreq.service") }
+pub fn openrc_service() -> String { read_auto_cpufreq_file("auto-cpufreq-openrc") }
+pub fn dinit_service() -> String { read_auto_cpufreq_file("auto-cpufreq-dinit") }
+pub fn runit_service() -> String { read_auto_cpufreq_file("auto-cpufreq-runit") }
+pub fn s6_service() -> String { read_auto_cpufreq_file("auto-cpufreq-s6/run") }
+
+// ============================================================================
+// Global state structures
+// ============================================================================
+pub struct AutoCpuFreqState {
+    pub cpu_count: usize,
+    pub performance_load_threshold: f32,
+    pub powersave_load_threshold: f32,
+    pub stats_file_path: PathBuf,
+    pub governor_override_path: PathBuf,
+    pub turbo_override_path: PathBuf,
+    pub is_snap: bool,
+    pub is_aur: bool,
+}
+
+impl AutoCpuFreqState {
+    pub fn new() -> Self {
+        let cpu_count = num_cpus::get();
+        let is_snap = std::env::var("PKG_MARKER").unwrap_or_default() == "SNAP";
+        
+        let (stats_path, gov_path, turbo_path) = if is_snap {
+            (
+                PathBuf::from("/var/snap/auto-cpufreq/current/auto-cpufreq.stats"),
+                PathBuf::from("/var/snap/auto-cpufreq/current/override.pickle"),
+                PathBuf::from("/var/snap/auto-cpufreq/current/turbo-override.pickle"),
+            )
+        } else {
+            (
+                PathBuf::from("/var/run/auto-cpufreq.stats"),
+                PathBuf::from("/opt/auto-cpufreq/override.pickle"),
+                PathBuf::from("/opt/auto-cpufreq/turbo-override.pickle"),
+            )
+        };
+
+        Self {
+            cpu_count,
+            performance_load_threshold: (50 * cpu_count) as f32 / 100.0,
+            powersave_load_threshold: (75 * cpu_count) as f32 / 100.0,
+            stats_file_path: stats_path,
+            governor_override_path: gov_path,
+            turbo_override_path: turbo_path,
+            is_snap,
+            is_aur: Self::check_aur_install(),
+        }
+    }
+
+    fn check_aur_install() -> bool {
+        Path::new("/etc/arch-release").exists() && 
+        Command::new("pacman")
+            .args(&["-Qs", "auto-cpufreq"])
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false)
+    }
+}
+
+// ============================================================================
+// Version management
+// ============================================================================
+pub fn get_version() -> Result<String> {
+    let state = AutoCpuFreqState::new();
+    
+    if state.is_snap {
+        Ok(format!("(Snap) {}", std::env::var("SNAP_VERSION")?))
+    } else if state.is_aur {
+        let output = Command::new("pacman")
+            .args(&["-Qi", "auto-cpufreq"])
+            .output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        
+        stdout.lines()
+            .find(|line| line.contains("Version"))
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("Version not found"))
+    } else {
+        get_formatted_version()
+    }
+}
+
+pub fn get_formatted_version() -> Result<String> {
+    let version = env!("CARGO_PKG_VERSION");
+    Ok(version.to_string())
+}
+
+pub fn app_version() {
+    match get_version() {
+        Ok(v) => println!("auto-cpufreq version: {}", v),
+        Err(e) => eprintln!("Error getting version: {}", e),
+    }
+}
+
+pub fn check_for_update() -> Result<bool> {
+    let latest_url = format!("{}/releases/latest", GITHUB.replace("github.com", "api.github.com/repos"));
+    
+    let client = reqwest::blocking::Client::new();
+    let response = client.get(&latest_url)
+        .header("User-Agent", "auto-cpufreq-rust")
+        .send()?;
+
+    if response.status().as_u16() == 200 {
+        let json: serde_json::Value = response.json()?;
+        let latest = json["tag_name"].as_str()
+            .ok_or_else(|| anyhow::anyhow!("No tag_name in response"))?;
+        
+        let current = format!("v{}", env!("CARGO_PKG_VERSION"));
+        
+        if latest != current {
+            println!("Updates available:");
+            println!("Current version: {}", current);
+            println!("Latest version: {}", latest);
+            Ok(true)
+        } else {
+            println!("auto-cpufreq is up to date");
+            Ok(false)
+        }
+    } else {
+        bail!("Failed to fetch release info: {}", response.status());
+    }
+}
+
+// ============================================================================
+// Governor management
+// ============================================================================
+#[derive(Debug, Clone, PartialEq)]
+pub enum GovernorOverride {
+    Default,
+    Powersave,
+    Performance,
+}
+
+impl GovernorOverride {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "powersave" => Self::Powersave,
+            "performance" => Self::Performance,
+            _ => Self::Default,
+        }
+    }
+
+    pub fn to_str(&self) -> &str {
+        match self {
+            Self::Powersave => "powersave",
+            Self::Performance => "performance",
+            Self::Default => "default",
+        }
+    }
+}
+
+pub fn get_override(state: &AutoCpuFreqState) -> GovernorOverride {
+    if state.governor_override_path.exists() {
+        fs::read_to_string(&state.governor_override_path)
+            .ok()
+            .map(|s| GovernorOverride::from_str(s.trim()))
+            .unwrap_or(GovernorOverride::Default)
+    } else {
+        GovernorOverride::Default
+    }
+}
+
+pub fn set_override(state: &AutoCpuFreqState, override_val: &str) -> Result<()> {
+    match override_val {
+        "powersave" | "performance" => {
+            fs::write(&state.governor_override_path, override_val)?;
+            println!("Set governor override to {}", override_val);
+        }
+        "reset" => {
+            if state.governor_override_path.exists() {
+                fs::remove_file(&state.governor_override_path)?;
+            }
+            println!("Governor override removed");
+        }
+        _ => {
+            println!("Invalid option.");
+            println!("Use force=performance, force=powersave, or force=reset");
+        }
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Turbo management
+// ============================================================================
+#[derive(Debug, Clone, PartialEq)]
+pub enum TurboOverride {
+    Auto,
+    Never,
+    Always,
+}
+
+impl TurboOverride {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "never" => Self::Never,
+            "always" => Self::Always,
+            _ => Self::Auto,
+        }
+    }
+
+    pub fn to_str(&self) -> &str {
+        match self {
+            Self::Never => "never",
+            Self::Always => "always",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+pub fn get_turbo_override(state: &AutoCpuFreqState) -> TurboOverride {
+    if state.turbo_override_path.exists() {
+        fs::read_to_string(&state.turbo_override_path)
+            .ok()
+            .map(|s| TurboOverride::from_str(s.trim()))
+            .unwrap_or(TurboOverride::Auto)
+    } else {
+        TurboOverride::Auto
+    }
+}
+
+pub fn set_turbo_override(state: &AutoCpuFreqState, override_val: &str) -> Result<()> {
+    match override_val {
+        "never" | "always" => {
+            fs::write(&state.turbo_override_path, override_val)?;
+            println!("Set turbo boost override to {}", override_val);
+        }
+        "auto" => {
+            if state.turbo_override_path.exists() {
+                fs::remove_file(&state.turbo_override_path)?;
+            }
+            println!("Turbo override removed");
+        }
+        _ => {
+            println!("Invalid option.");
+            println!("Use turbo=always, turbo=never, or turbo=auto");
+        }
+    }
+    Ok(())
+}
+
+pub fn turbo(value: Option<bool>) -> Result<bool> {
+    let p_state = Path::new("/sys/devices/system/cpu/intel_pstate/no_turbo");
+    let cpufreq = Path::new("/sys/devices/system/cpu/cpufreq/boost");
+    let amd_pstate = Path::new("/sys/devices/system/cpu/amd_pstate/status");
+    
+    let (control_file, inverse) = if p_state.exists() {
+        (p_state, true)
+    } else if cpufreq.exists() {
+        (cpufreq, false)
+    } else if amd_pstate.exists() {
+        let status = fs::read_to_string(amd_pstate)?.trim().to_string();
+        if status == "active" {
+            println!("CPU turbo is controlled by amd-pstate-epp driver");
+        }
+        return Ok(false);
+    } else {
+        println!("Warning: CPU turbo is not available");
+        return Ok(false);
+    };
+    
+    if let Some(val) = value {
+        let write_val = if inverse { !val } else { val };
+        match fs::write(control_file, format!("{}\n", write_val as u8)) {
+            Ok(_) => {}
+            Err(_) => {
+                println!("Warning: Changing CPU turbo is not supported. Skipping.");
+                return Ok(false);
+            }
+        }
+    }
+    
+    let current = fs::read_to_string(control_file)?
+        .trim()
+        .parse::<u8>()?;
+    
+    Ok((current != 0) ^ inverse)
+}
+
+pub fn get_turbo() {
+    match turbo(None) {
+        Ok(state) => println!("Currently turbo boost is: {}", if state { "on" } else { "off" }),
+        Err(e) => eprintln!("Error getting turbo state: {}", e),
+    }
+}
+
+pub fn set_turbo(value: bool) {
+    println!("Setting turbo boost: {}", if value { "on" } else { "off" });
+    let _ = turbo(Some(value));
+}
+
+// ============================================================================
+// Distribution info
+// ============================================================================
+pub fn distro_info() -> Result<()> {
+    let mut dist_name = "UNKNOWN distro".to_string();
+    let mut version = "UNKNOWN version".to_string();
+
+    if Path::new("/etc/os-release").exists() {
+        let file = File::open("/etc/os-release")?;
+        let reader = BufReader::new(file);
+        
+        for line in reader.lines() {
+            let line = line?;
+            if line.starts_with("NAME=") {
+                dist_name = line.trim_start_matches("NAME=")
+                    .trim_matches('"')
+                    .to_string();
+            } else if line.starts_with("VERSION=") {
+                version = line.trim_start_matches("VERSION=")
+                    .trim_matches('"')
+                    .to_string();
+            }
+        }
+    }
+
+    println!("Linux distro: {} {}", dist_name, version);
+    println!("Linux kernel: {}", System::kernel_version().unwrap_or_default());
+    
+    Ok(())
+}
+
+// ============================================================================
+// Temperature reading functions
+// ============================================================================
+
+/// Read CPU core temperature from hwmon sensors
+fn read_cpu_temperature(core_id: usize) -> f32 {
+    let sensor_priority = ["coretemp", "k10temp", "zenpower", "acpitz"];
+    let hwmon_path = "/sys/class/hwmon";
+    
+    if let Ok(entries) = fs::read_dir(hwmon_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name_file = path.join("name");
+            
+            if let Ok(sensor_name) = fs::read_to_string(&name_file) {
+                let sensor_name = sensor_name.trim();
+                
+                if sensor_priority.contains(&sensor_name) {
+                    // For coretemp: temp1 = Package, temp2+ = cores
+                    // Try temp{core_id + 2}_input first, then iterate
+                    let preferred_temp_id = core_id + 2;
+                    
+                    for temp_id in preferred_temp_id..20 {
+                        let temp_file = path.join(format!("temp{}_input", temp_id));
+                        
+                        if temp_file.exists() {
+                            if let Ok(temp_str) = fs::read_to_string(&temp_file) {
+                                if let Ok(temp_millidegrees) = temp_str.trim().parse::<f32>() {
+                                    return temp_millidegrees / 1000.0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    0.0
+}
+
+/// Read overall package temperature
+fn read_package_temperature() -> f32 {
+    let hwmon_path = "/sys/class/hwmon";
+    
+    if let Ok(entries) = fs::read_dir(hwmon_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name_file = path.join("name");
+            
+            if let Ok(sensor_name) = fs::read_to_string(&name_file) {
+                let sensor_name = sensor_name.trim();
+                
+                if sensor_name == "coretemp" || sensor_name == "k10temp" {
+                    // temp1 is usually Package/Tdie
+                    let temp_input = path.join("temp1_input");
+                    if let Ok(temp_str) = fs::read_to_string(&temp_input) {
+                        if let Ok(temp) = temp_str.trim().parse::<f32>() {
+                            return temp / 1000.0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    0.0
+}
+
+// ============================================================================
+// System info
+// ============================================================================
+pub fn sysinfo() -> Result<()> {
+    let cpuinfo = fs::read_to_string("/proc/cpuinfo")?;
+    let model_name = cpuinfo
+        .lines()
+        .find(|line| line.contains("model name"))
+        .and_then(|line| line.split(':').nth(1))
+        .map(|s| s.trim())
+        .unwrap_or("Unknown");
+    
+    println!("Processor: {}", model_name);
+    
+    let cpu_count = num_cpus::get();
+    println!("Cores: {}", cpu_count);
+    
+    let arch = std::env::consts::ARCH;
+    println!("Architecture: {}", arch);
+    
+    let driver = fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_driver")
+        .unwrap_or_else(|_| "unknown".to_string())
+        .trim()
+        .to_string();
+    println!("Driver: {}", driver);
+    
+    let mut sys = System::new_all();
+    sys.refresh_cpu();
+    
+    if let Some(cpu) = sys.cpus().first() {
+        println!("\n{}", "-".repeat(30) + " Current CPU stats " + &"-".repeat(30));
+        println!("\nCPU max frequency: {} MHz", cpu.frequency());
+    }
+    
+    println!("\nCore\tUsage\tTemperature\tFrequency");
+    
+    for (i, cpu) in sys.cpus().iter().enumerate() {
+        let temp = read_cpu_temperature(i);
+        let temp_str = if temp > 0.0 {
+            format!("{:.0} °C", temp)
+        } else {
+            "-- °C".to_string()
+        };
+        
+        println!("CPU{}\t{:.1}%\t{}\t{} MHz", 
+            i, 
+            cpu.cpu_usage(),
+            temp_str,
+            cpu.frequency()
+        );
+    }
+    
+    // Show average/package temperature if available
+    let pkg_temp = read_package_temperature();
+    if pkg_temp > 0.0 {
+        println!("\nPackage temperature: {:.1} °C", pkg_temp);
+    }
+    
+    Ok(())
+}
+
+// ============================================================================
+// Power supply / charging detection
+// ============================================================================
+pub fn get_power_supply_ignore_list() -> Vec<String> {
+    vec!["hidpp_battery".to_string()]
+}
+
+pub fn charging() -> Result<bool> {
+    let power_dir = Path::new(POWER_SUPPLY_DIR);
+    
+    if !power_dir.exists() {
+        return Ok(true);
+    }
+    
+    let mut entries: Vec<_> = fs::read_dir(power_dir)?
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    
+    let ignore_list = get_power_supply_ignore_list();
+    
+    if entries.is_empty() {
+        return Ok(true);
+    }
+    
+    for entry in entries {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        
+        if ignore_list.iter().any(|ignored| name_str.contains(ignored)) {
+            continue;
+        }
+        
+        let supply_path = entry.path();
+        let type_path = supply_path.join("type");
+        
+        if !type_path.exists() {
+            continue;
+        }
+        
+        let supply_type = fs::read_to_string(&type_path)?.trim().to_string();
+        
+        if supply_type == "Mains" {
+            let online_path = supply_path.join("online");
+            if online_path.exists() {
+                let online = fs::read_to_string(&online_path)?.trim().to_string();
+                if online == "1" {
+                    return Ok(true);
+                }
+            }
+        } else if supply_type == "Battery" {
+            let status_path = supply_path.join("status");
+            if status_path.exists() {
+                let status = fs::read_to_string(&status_path)?.trim().to_string();
+                if status == "Discharging" {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    
+    Ok(true)
+}
+
+// ============================================================================
+// Governor functions
+// ============================================================================
+pub fn get_current_gov() -> Result<String> {
+    let output = Command::new("cpufreqctl.auto-cpufreq")
+        .arg("--governor")
+        .output()?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let gov = stdout.split_whitespace().next().unwrap_or("unknown");
+    
+    Ok(gov.to_string())
+}
+
+pub fn print_current_gov() {
+    match get_current_gov() {
+        Ok(gov) => println!("Currently using: {} governor", gov),
+        Err(e) => eprintln!("Error getting governor: {}", e),
+    }
+}
+
+// ============================================================================
+// cpufreqctl deployment
+// ============================================================================
+pub fn cpufreqctl() -> Result<()> {
+    let state = AutoCpuFreqState::new();
+    let target = "/usr/local/bin/cpufreqctl.auto-cpufreq";
+    
+    if !state.is_snap && !Path::new(target).exists() {
+        let source = PathBuf::from(SCRIPTS_DIR).join("cpufreqctl.sh");
+        fs::copy(source, target)?;
+        
+        Command::new("chmod")
+            .args(&["a+x", target])
+            .status()?;
+    }
+    
+    Ok(())
+}
+
+pub fn cpufreqctl_restore() -> Result<()> {
+    let state = AutoCpuFreqState::new();
+    let target = "/usr/local/bin/cpufreqctl.auto-cpufreq";
+    
+    if !state.is_snap && Path::new(target).exists() {
+        fs::remove_file(target)?;
+    }
+    
+    Ok(())
+}
+
+fn deploy_cpufreqctl() -> Result<()> {
+    let target = "/usr/local/bin/cpufreqctl.auto-cpufreq";
+    
+    if !Path::new(target).exists() {
+        println!("\n* Deploying cpufreqctl helper script");
+        fs::write(target, cpufreqctl_script())?;        
+
+        Command::new("chmod")
+            .args(&["+x", target])
+            .status()?;
+    }
+    
+    Ok(())
+}
+
+fn remove_cpufreqctl() -> Result<()> {
+    let target = "/usr/local/bin/cpufreqctl.auto-cpufreq";
+    
+    if Path::new(target).exists() {
+        println!("\n* Removing cpufreqctl helper script");
+        fs::remove_file(target)?;
+    }
+    
+    Ok(())
+}
+
+// ============================================================================
+// Load information
+// ============================================================================
+pub fn get_load() -> (f64, f64) {
+    let mut sys = System::new_all();
+    sys.refresh_cpu();
+    
+    let cpu_usage: f64 = sys.cpus().iter()
+        .map(|cpu| cpu.cpu_usage() as f64)
+        .sum::<f64>() / sys.cpus().len() as f64;
+    
+    let loadavg = System::load_average();
+    let load1m = loadavg.one;
+    
+    println!("\nTotal CPU usage: {:.1}%", cpu_usage);
+    println!("Total system load: {:.2}", load1m);
+    
+    // Calculate average temperature
+    let temps: Vec<f32> = (0..sys.cpus().len())
+        .map(|i| read_cpu_temperature(i))
+        .filter(|&t| t > 0.0)
+        .collect();
+    
+    if !temps.is_empty() {
+        let avg_temp: f32 = temps.iter().sum::<f32>() / temps.len() as f32;
+        println!("Average temp. of all cores: {:.1} °C\n", avg_temp);
+    } else {
+        println!("Average temp. of all cores: -- °C\n");
+    }
+    
+    (cpu_usage, load1m)
+}
+
+pub fn display_system_load_avg() {
+    let loadavg = System::load_average();
+    println!(" (load average: {:.2}, {:.2}, {:.2})", 
+        loadavg.one, loadavg.five, loadavg.fifteen);
+}
+
+// ============================================================================
+// Utility functions
+// ============================================================================
+pub fn footer(length: usize) {
+    println!("\n{}\n", "-".repeat(length));
+}
+
+pub fn root_check() -> Result<()> {
+    if !nix::unistd::Uid::effective().is_root() {
+        eprintln!("\n{}\n", "-".repeat(33) + " Root check " + &"-".repeat(34));
+        eprintln!("ERROR:\n");
+        eprintln!("Must be run as root for this functionality to work");
+        bail!("Not running as root");
+    }
+    Ok(())
+}
+
+pub fn countdown(seconds: u64) {
+    use std::io::stdout;
+    
+    std::env::set_var("TERM", "xterm");
+    
+    print!("\t\t\"auto-cpufreq\" is about to refresh ");
+    stdout().flush().unwrap();
+    
+    for remaining in (0..=seconds).rev() {
+        if remaining <= 3 {
+            print!(".");
+            stdout().flush().unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1000 * seconds / 3));
+    }
+    
+    println!("\n\t\tExecuted on: {}", Local::now().format("%c"));
+}
+
+// ============================================================================
+// Daemon management
+// ============================================================================
+pub fn is_running(program: &str, argument: &str) -> bool {
+    let mut sys = System::new_all();
+    sys.refresh_processes();
+    
+    for (_, process) in sys.processes() {
+        let cmd = process.cmd();
+        if cmd.iter().any(|s| s.contains(program)) && 
+           cmd.iter().any(|s| s.contains(argument)) {
+            return true;
+        }
+    }
+    
+    false
+}
+
+pub fn daemon_running_check() -> Result<()> {
+    let state = AutoCpuFreqState::new();
+    
+    if is_running("auto-cpufreq", "--daemon") {
+        println!("\n{}\n", "-".repeat(24) + " auto-cpufreq running " + &"-".repeat(30));
+        println!("ERROR: auto-cpufreq is running in daemon mode.");
+        println!("\nMake sure to stop the daemon before running with --live or --monitor mode");
+        footer(79);
+        bail!("Daemon already running");
+    } else if state.is_snap {
+        let output = Command::new("snapctl")
+            .args(&["get", "daemon"]) 
+            .output();
+        
+        if let Ok(out) = output {
+            let status = String::from_utf8_lossy(&out.stdout);
+            if status.trim() == "enabled" {
+                println!("\n{}\n", "-".repeat(24) + " auto-cpufreq running " + &"-".repeat(30));
+                println!("ERROR: auto-cpufreq is running in daemon mode.");
+                footer(79);
+                bail!("Daemon already running");
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+pub fn not_running_daemon_check() -> Result<()> {
+    let state = AutoCpuFreqState::new();
+    
+    if !is_running("auto-cpufreq", "--daemon") {
+        println!("\n{}\n", "-".repeat(24) + " auto-cpufreq not running " + &"-".repeat(30));
+        println!("ERROR: auto-cpufreq is not running in daemon mode.");
+        println!("\nMake sure to run \"sudo auto-cpufreq --install\" first");
+        footer(79);
+        bail!("Daemon not running");
+    } else if state.is_snap {
+        let output = Command::new("snapctl")
+            .args(&["get", "daemon"]) 
+            .output();
+        
+        if let Ok(out) = output {
+            let status = String::from_utf8_lossy(&out.stdout);
+            if status.trim() == "disabled" {
+                println!("\n{}\n", "-".repeat(24) + " auto-cpufreq not running " + &"-".repeat(30));
+                println!("ERROR: auto-cpufreq is not running in daemon mode.");
+                footer(79);
+                bail!("Daemon not running");
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+// ============================================================================
+// Install/Remove script runners
+// ============================================================================
+
+/// Run the embedded install script (pre-installation tasks)
+pub fn run_install_script() -> Result<()> {
+    println!("\n* Running pre-installation script");
+    
+    // Write script to temporary file
+    let temp_script = "/tmp/auto-cpufreq-install.sh";
+    fs::write(temp_script, install_script())?;
+    
+    // Make executable
+    Command::new("chmod")
+        .args(&["+x", temp_script])
+        .status()?;
+    
+    // Execute script
+    let status = Command::new("sh")
+        .arg(temp_script)
+        .status()?;
+    
+    // Clean up
+    let _ = fs::remove_file(temp_script);
+    
+    if status.success() {
+        println!("* Pre-installation script completed successfully");
+        Ok(())
+    } else {
+        println!("* Warning: Pre-installation script completed with errors (continuing anyway)");
+        Ok(())
+    }
+}
+
+/// Run the embedded remove script (post-removal tasks)
+pub fn run_remove_script() -> Result<()> {
+    println!("\n* Running post-removal script");
+    
+    // Write script to temporary file
+    let temp_script = "/tmp/auto-cpufreq-remove.sh";
+    fs::write(temp_script, remove_script())?;
+    
+    // Make executable
+    Command::new("chmod")
+        .args(&["+x", temp_script])
+        .status()?;
+    
+    // Execute script
+    let status = Command::new("sh")
+        .arg(temp_script)
+        .status()?;
+    
+    // Clean up
+    let _ = fs::remove_file(temp_script);
+    
+    if status.success() {
+        println!("* Post-removal script completed successfully");
+        Ok(())
+    } else {
+        println!("* Warning: Post-removal script completed with errors (continuing anyway)");
+        Ok(())
+    }
+}
+
+/// Get the install script content (for external use)
+pub fn get_install_script() -> String { 
+    install_script()
+}
+
+pub fn get_remove_script() -> String { 
+    remove_script()
+}
+
+// ============================================================================
+// Init system detection and daemon installation/removal
+// ============================================================================
+
+/// Detect init system
+pub fn detect_init_system() -> &'static str {
+    let output = Command::new("ps")
+        .args(&["-p", "1", "-o", "comm="])
+        .output();
+    
+    if let Ok(out) = output {
+        let init = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        match init.as_str() {
+            "systemd" => "systemd",
+            "init" => "openrc",
+            "dinit" => "dinit",
+            "runit" => "runit",
+            "s6-svscan" => "s6",
+            _ => "unknown"
+        }
+    } else {
+        "unknown"
+    }
+}
+
+/// Install daemon using appropriate init system
+pub fn install_daemon() -> Result<()> {
+    let init = detect_init_system();
+    
+    println!("\n{}", "=".repeat(80));
+    println!("Installing auto-cpufreq daemon ({} detected)", init);
+    println!("{}", "=".repeat(80));
+    
+    // Run pre-install script if available
+    run_install_script()?;
+    
+    deploy_cpufreqctl()?;
+    
+    match init {
+        "systemd" => install_systemd(),
+        "openrc" => install_openrc(),
+        "dinit" => install_dinit(),
+        "runit" => install_runit(),
+        "s6" => install_s6(),
+        _ => {
+            println!("\n* Unsupported init system detected, could not install the daemon\n");
+            println!("* Please open an issue on https://github.com/AdnanHodzic/auto-cpufreq\n");
+            bail!("Unsupported init system: {}", init)
+        }
+    }
+}
+
+/// Remove daemon using appropriate init system
+pub fn remove_daemon() -> Result<()> {
+    let init = detect_init_system();
+    
+    println!("\n{}", "=".repeat(80));
+    println!("Removing auto-cpufreq daemon ({} detected)", init);
+    println!("{}", "=".repeat(80));
+    
+    let result = match init {
+        "systemd" => remove_systemd(),
+        "openrc" => remove_openrc(),
+        "dinit" => remove_dinit(),
+        "runit" => remove_runit(),
+        "s6" => remove_s6(),
+        _ => {
+            println!("\n* Unsupported init system detected, could not remove the daemon");
+            println!("* Please open an issue on https://github.com/AdnanHodzic/auto-cpufreq\n");
+            bail!("Unsupported init system: {}", init)
+        }
+    };
+    
+    remove_cpufreqctl()?;
+    
+    // Run post-remove script if available
+    run_remove_script()?;
+    
+    result
+}
+
+// ============================================================================
+// systemd
+// ============================================================================
+
+fn install_systemd() -> Result<()> {
+    println!("\n* Deploying auto-cpufreq systemd unit file");
+    
+    fs::write("/etc/systemd/system/auto-cpufreq.service", systemd_service())?;
+    
+    println!("\n* Reloading systemd manager configuration");
+    Command::new("systemctl")
+        .arg("daemon-reload")
+        .status()?;
+    
+    println!("\n* Starting auto-cpufreq daemon (systemd) service");
+    Command::new("systemctl")
+        .args(&["start", "auto-cpufreq"])
+        .status()?;
+    
+    println!("\n* Enabling auto-cpufreq daemon (systemd) at boot");
+    Command::new("systemctl")
+        .args(&["enable", "auto-cpufreq"])
+        .status()?;
+    
+    Ok(())
+}
+
+fn remove_systemd() -> Result<()> {
+    println!("\n* Stopping auto-cpufreq daemon (systemd) service");
+    let _ = Command::new("systemctl")
+        .args(&["stop", "auto-cpufreq"])
+        .status();
+    
+    println!("\n* Disabling auto-cpufreq daemon (systemd) at boot");
+    let _ = Command::new("systemctl")
+        .args(&["disable", "auto-cpufreq"])
+        .status();
+    
+    println!("\n* Removing auto-cpufreq daemon (systemd) unit file");
+    let _ = fs::remove_file("/etc/systemd/system/auto-cpufreq.service");
+    
+    println!("\n* Reloading systemd manager configuration");
+    Command::new("systemctl")
+        .arg("daemon-reload")
+        .status()?;
+    
+    println!("\nReset failed");
+    Command::new("systemctl")
+        .arg("reset-failed")
+        .status()?;
+    
+    Ok(())
+}
+
+// ============================================================================
+// OpenRC
+// ============================================================================
+
+fn install_openrc() -> Result<()> {
+    println!("\n* Deploying auto-cpufreq openrc unit file");
+    
+    fs::write("/etc/init.d/auto-cpufreq", openrc_service())?;
+    
+    Command::new("chmod")
+        .args(&["+x", "/etc/init.d/auto-cpufreq"])
+        .status()?;
+    
+    println!("\n* Starting auto-cpufreq daemon (openrc) service");
+    Command::new("rc-service")
+        .args(&["auto-cpufreq", "start"])
+        .status()?;
+    
+    println!("\n* Enabling auto-cpufreq daemon (openrc) at boot");
+    Command::new("rc-update")
+        .args(&["add", "auto-cpufreq"])
+        .status()?;
+    
+    Ok(())
+}
+
+fn remove_openrc() -> Result<()> {
+    println!("\n* Stopping auto-cpufreq daemon (openrc) service");
+    let _ = Command::new("rc-service")
+        .args(&["auto-cpufreq", "stop"])
+        .status();
+    
+    println!("\n* Disabling auto-cpufreq daemon (openrc) at boot");
+    let _ = Command::new("rc-update")
+        .args(&["del", "auto-cpufreq"])
+        .status();
+    
+    println!("\n* Removing auto-cpufreq daemon (openrc) unit file");
+    let _ = fs::remove_file("/etc/init.d/auto-cpufreq");
+    
+    Ok(())
+}
+
+// ============================================================================
+// dinit
+// ============================================================================
+
+fn install_dinit() -> Result<()> {
+    println!("\n* Deploying auto-cpufreq (dinit) unit file");
+    
+    fs::write("/etc/dinit.d/auto-cpufreq", dinit_service())?;
+    
+    println!("\n* Starting auto-cpufreq daemon (dinit) service");
+    Command::new("dinitctl")
+        .args(&["start", "auto-cpufreq"])
+        .status()?;
+    
+    println!("\n* Enabling auto-cpufreq daemon (dinit) at boot");
+    Command::new("dinitctl")
+        .args(&["enable", "auto-cpufreq"])
+        .status()?;
+    
+    Ok(())
+}
+
+fn remove_dinit() -> Result<()> {
+    println!("\n* Stopping auto-cpufreq daemon (dinit) service");
+    let _ = Command::new("dinitctl")
+        .args(&["stop", "auto-cpufreq"])
+        .status();
+    
+    println!("\n* Disabling auto-cpufreq daemon (dinit) at boot");
+    let _ = Command::new("dinitctl")
+        .args(&["disable", "auto-cpufreq"])
+        .status();
+    
+    println!("\n* Removing auto-cpufreq daemon (dinit) unit file");
+    let _ = fs::remove_file("/etc/dinit.d/auto-cpufreq");
+    
+    Ok(())
+}
+
+// ============================================================================
+// runit
+// ============================================================================
+
+fn install_runit() -> Result<()> {
+    let (sv_path, service_path) = if Path::new("/etc/os-release").exists() {
+        let os_release = fs::read_to_string("/etc/os-release")?;
+        let mut distro_id = String::new();
+        
+        for line in os_release.lines() {
+            if line.starts_with("ID=") {
+                distro_id = line.trim_start_matches("ID=").trim_matches('"').to_string();
+                break;
+            }
+        }
+        
+        match distro_id.as_str() {
+            "void" => ("/etc", "/var"),
+            "artix" => ("/etc/runit", "/run/runit"),
+            _ => {
+                println!("\n* Runit init detected but your distro is not supported\n");
+                println!("* Please open an issue on https://github.com/AdnanHodzic/auto-cpufreq\n");
+                bail!("Unsupported runit distro: {}", distro_id);
+            }
+        }
+    } else {
+        bail!("Could not detect distro for runit");
+    };
+    
+    println!("\n* Deploying auto-cpufreq (runit) unit file");
+    
+    let sv_dir = format!("{}/sv/auto-cpufreq", sv_path);
+    fs::create_dir_all(&sv_dir)?;
+    
+    let run_script = format!("{}/run", sv_dir);
+    fs::write(&run_script, runit_service())?;
+    
+    Command::new("chmod")
+        .args(&["+x", &run_script])
+        .status()?;
+    
+    println!("\n* Creating symbolic link ({}/service/auto-cpufreq -> {}/sv/auto-cpufreq)", service_path, sv_path);
+    
+    let service_link = format!("{}/service/auto-cpufreq", service_path);
+    let _ = fs::remove_file(&service_link);
+    
+    std::os::unix::fs::symlink(&sv_dir, &service_link)?;
+    
+    println!("\n* Starting auto-cpufreq daemon (runit)");
+    Command::new("sv")
+        .args(&["start", "auto-cpufreq"])
+        .status()?;
+    
+    Command::new("sv")
+        .args(&["up", "auto-cpufreq"])
+        .status()?;
+    
+    Ok(())
+}
+
+fn remove_runit() -> Result<()> {
+    let (sv_path, service_path) = if Path::new("/etc/os-release").exists() {
+        let os_release = fs::read_to_string("/etc/os-release")?;
+        let mut distro_id = String::new();
+        
+        for line in os_release.lines() {
+            if line.starts_with("ID=") {
+                distro_id = line.trim_start_matches("ID=").trim_matches('"').to_string();
+                break;
+            }
+        }
+        
+        match distro_id.as_str() {
+            "void" => ("/etc", "/var"),
+            "artix" => ("/etc/runit", "/run/runit"),
+            _ => bail!("Unsupported runit distro"),
+        }
+    } else {
+        bail!("Could not detect distro");
+    };
+    
+    println!("\n* Stopping auto-cpufreq daemon (runit) service");
+    let _ = Command::new("sv")
+        .args(&["stop", "auto-cpufreq"])
+        .status();
+    
+    println!("\n* Removing auto-cpufreq daemon (runit) unit file");
+    let _ = fs::remove_dir_all(format!("{}/sv/auto-cpufreq", sv_path));
+    let _ = fs::remove_file(format!("{}/service/auto-cpufreq", service_path));
+    
+    Ok(())
+}
+
+// ============================================================================
+// s6
+// ============================================================================
+
+fn install_s6() -> Result<()> {
+    println!("\n* Deploying auto-cpufreq (s6) unit file");
+    
+    let s6_dir = "/etc/s6/sv/auto-cpufreq";
+    fs::create_dir_all(s6_dir)?;
+    
+    let run_script = format!("{}/run", s6_dir);
+    fs::write(&run_script, s6_service())?;
+    
+    Command::new("chmod")
+        .args(&["+x", &run_script])
+        .status()?;
+    
+    println!("\n* Add auto-cpufreq service (s6) to default bundle");
+    Command::new("s6-service")
+        .args(&["add", "default", "auto-cpufreq"])
+        .status()?;
+    
+    println!("\n* Starting auto-cpufreq daemon (s6)");
+    Command::new("s6-rc")
+        .args(&["-u", "change", "auto-cpufreq", "default"])
+        .status()?;
+    
+    println!("\n* Update daemon service bundle (s6)");
+    Command::new("s6-db-reload")
+        .status()?;
+    
+    Ok(())
+}
+
+fn remove_s6() -> Result<()> {
+    println!("\n* Disabling auto-cpufreq daemon (s6) at boot");
+    let _ = Command::new("s6-service")
+        .args(&["delete", "default", "auto-cpufreq"])
+        .status();
+    
+    println!("\n* Removing auto-cpufreq daemon (s6) unit file");
+    let _ = fs::remove_dir_all("/etc/s6/sv/auto-cpufreq");
+    
+    println!("\n* Update daemon service bundle (s6)");
+    Command::new("s6-db-reload")
+        .status()?;
+    
+    Ok(())
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_governor_override() {
+        assert_eq!(GovernorOverride::from_str("powersave"), GovernorOverride::Powersave);
+        assert_eq!(GovernorOverride::from_str("performance"), GovernorOverride::Performance);
+        assert_eq!(GovernorOverride::from_str("invalid"), GovernorOverride::Default);
+    }
+    
+    #[test]
+    fn test_turbo_override() {
+        assert_eq!(TurboOverride::from_str("never"), TurboOverride::Never);
+        assert_eq!(TurboOverride::from_str("always"), TurboOverride::Always);
+        assert_eq!(TurboOverride::from_str("auto"), TurboOverride::Auto);
+    }
+}
+
+
+
+--- FILE: ./globals.rs ---
+
+// src/globals.rs
+
+use std::env;
+use std::path::Path;
+use std::process::Command;
+
+pub const ALL_GOVERNORS: &[&str] = &[
+    "performance",
+    "ondemand",
+    "conservative",
+    "schedutil",
+    "userspace",
+    "powersave",
+];
+
+pub const CONSERVATION_MODE_FILE: &str = 
+    "/sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/conservation_mode";
+
+pub const GITHUB: &str = "https://github.com/AdnanHodzic/auto-cpufreq";
+
+pub const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply/";
+
+pub const CPU_TEMP_SENSOR_PRIORITY: &[&str] = &[
+    "coretemp",
+    "acpitz",
+    "k10temp",
+    "zenpower",
+];
+
+lazy_static::lazy_static! {
+    pub static ref IS_INSTALLED_WITH_AUR: bool = check_aur_install();
+    pub static ref IS_INSTALLED_WITH_SNAP: bool = check_snap_install();
+    pub static ref AVAILABLE_GOVERNORS: Vec<String> = get_available_governors();
+    pub static ref AVAILABLE_GOVERNORS_SORTED: Vec<String> = sort_governors(&AVAILABLE_GOVERNORS);
+}
+
+fn check_snap_install() -> bool {
+    env::var("PKG_MARKER").map(|v| v == "SNAP").unwrap_or(false)
+}
+
+fn check_aur_install() -> bool {
+    Path::new("/etc/arch-release").exists()
+        && Command::new("pacman")
+            .args(&["-Qs", "auto-cpufreq"])
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false)
+}
+
+fn get_available_governors() -> Vec<String> {
+    Command::new("cat")
+        .arg("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|s| {
+            s.trim()
+                .split_whitespace()
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn sort_governors(available: &[String]) -> Vec<String> {
+    ALL_GOVERNORS
+        .iter()
+        .filter_map(|&gov| {
+            if available.contains(&gov.to_string()) {
+                Some(gov.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_all_governors_order() {
+        assert_eq!(ALL_GOVERNORS[0], "performance");
+        assert_eq!(ALL_GOVERNORS[ALL_GOVERNORS.len() - 1], "powersave");
+    }
+}
+
+
+
+--- FILE: ./gui/app.rs ---
+
+// src/gui/app.rs
+
+use glib::clone;
+use gtk::prelude::*;
+use gtk::{
+    Application, ApplicationWindow, Box as GtkBox, Button, CssProvider, 
+    Label, Orientation, ScrolledWindow, Separator, MessageDialog, MessageType, ButtonsType,
+    DialogFlags, STYLE_PROVIDER_PRIORITY_APPLICATION
+};
+use gdk::Display;
+use std::cell::RefCell;
+use std::rc::Rc;
+use glib;
+use sysinfo::System; 
+
+use crate::core::*;
+use crate::globals::*;
+use crate::power_helper::BLUETOOTHCTL_EXISTS;
+use crate::modules::system_info::{SystemInfo, SystemReport};
+use super::objects::*;
+
+const HBOX_PADDING: i32 = 20;
+
+fn css_file() -> &'static str {
+    if *IS_INSTALLED_WITH_SNAP {
+        "/snap/auto-cpufreq-rust/current/style.css"
+    } else {
+        "/usr/local/share/auto-cpufreq/scripts/style.css"
+    }
+}
+
+fn icon_file() -> &'static str {
+    if *IS_INSTALLED_WITH_SNAP {
+        "/snap/auto-cpufreq-rust/current/icon.png"
+    } else {
+        "/usr/local/share/auto-cpufreq/images/icon.png"
+    }
+}
+
+pub struct ToolWindow {
+    window: ApplicationWindow,
+    main_box: Option<GtkBox>,
+    system_stats: Option<SystemStatsLabel>,
+    current_governor: Option<CurrentGovernorBox>,
+    battery_info: Option<BatteryInfoBox>,
+    cpu_freq_scaling: Option<CPUFreqScalingBox>,
+    system_stats_box: Option<SystemStatisticsBox>,
+}
+
+impl ToolWindow {
+    pub fn new(app: &Application) -> Rc<RefCell<Self>> {
+        let window = ApplicationWindow::builder()
+            .application(app)
+            .title("auto-cpufreq")
+            .default_width(900)
+            .default_height(650)
+            .build();
+
+        window.set_resizable(true);
+
+        let tool_window = Rc::new(RefCell::new(Self {
+            window,
+            main_box: None,
+            system_stats: None,
+            current_governor: None,
+            battery_info: None,
+            cpu_freq_scaling: None,
+            system_stats_box: None,
+        }));
+
+        tool_window
+    }
+
+    fn load_css() {
+        let provider = CssProvider::new();
+        provider.load_from_path(css_file());
+        gtk::style_context_add_provider_for_display(
+            &Display::default().expect("Could not connect to display"),
+            &provider,
+            STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+
+    pub fn build(&mut self) {
+        if *IS_INSTALLED_WITH_SNAP {
+            self.build_snap_view();
+        } else if is_running("auto-cpufreq", "--daemon") {
+            self.build_main_view();
+        } else {
+            self.build_daemon_not_running_view();
+        }
+    }
+
+    fn build_snap_view(&self) {
+        let vbox = GtkBox::new(Orientation::Vertical, 10);
+        vbox.set_halign(gtk::Align::Center);
+        vbox.set_valign(gtk::Align::Center);
+
+        let label = Label::new(Some(
+            "GUI not available due to Snap package confinement limitations.\n\
+             Please install auto-cpufreq using auto-cpufreq-installer\n\
+             Visit the GitHub repo for more info"
+        ));
+        label.set_justify(gtk::Justification::Center);
+
+        let button = Button::with_label("GitHub Repo");
+        button.connect_clicked(|_| {
+            let _ = open::that(GITHUB);
+        });
+
+        vbox.append(&label);
+        vbox.append(&button);
+
+        self.window.set_child(Some(&vbox));
+    }
+
+   
+
+    fn build_main_view(&mut self) {
+        let hbox = GtkBox::new(Orientation::Horizontal, HBOX_PADDING);
+
+        // Left side - System stats
+        let system_stats = SystemStatsLabel::new();
+        hbox.append(system_stats.widget());
+
+        // Right side - Controls
+        let vbox_right = GtkBox::new(Orientation::Vertical, 15);
+        vbox_right.set_vexpand(true);
+        vbox_right.set_hexpand(true);
+
+        // Current Governor
+        let current_governor = CurrentGovernorBox::new();
+        vbox_right.append(current_governor.widget());
+
+        // Radio buttons for governor override
+        let radio_view = RadioButtonView::new();
+        vbox_right.append(radio_view.widget());
+
+        // Turbo override (if supported)
+        let stats = get_stats();
+        if !stats.contains("Warning: CPU turbo is not available") {
+            let turbo_view = CPUTurboOverride::new();
+            vbox_right.append(turbo_view.widget());
+        }
+
+        // Battery info
+        let battery_info = BatteryInfoBox::new();
+        vbox_right.append(battery_info.widget());
+
+        // CPU Freq Scaling
+        let cpu_freq_scaling = CPUFreqScalingBox::new();
+        vbox_right.append(cpu_freq_scaling.widget());
+
+        // System Statistics
+        let system_stats_box = SystemStatisticsBox::new();
+        vbox_right.append(system_stats_box.widget());
+
+        // Bluetooth control
+        if *BLUETOOTHCTL_EXISTS {
+            let bluetooth_control = BluetoothBootControl::new();
+            vbox_right.append(bluetooth_control.widget());
+        }
+
+        let scrolled_right = ScrolledWindow::new();
+        scrolled_right.set_child(Some(&vbox_right));
+        scrolled_right.set_vexpand(true);
+
+        hbox.append(&scrolled_right);
+
+        self.window.set_child(Some(&hbox));
+
+        // Store references for refresh
+        self.main_box = Some(hbox);
+        self.system_stats = Some(system_stats);
+        self.current_governor = Some(current_governor);
+        self.battery_info = Some(battery_info);
+        self.cpu_freq_scaling = Some(cpu_freq_scaling);
+        self.system_stats_box = Some(system_stats_box);
+
+        // Setup auto-refresh
+        self.setup_refresh();
+    }
+fn setup_refresh(&self) {
+    let system_stats = self.system_stats.clone();
+    let current_governor = self.current_governor.clone();
+    let battery_info = self.battery_info.clone();
+    let cpu_freq_scaling = self.cpu_freq_scaling.clone();
+    let system_stats_box = self.system_stats_box.clone();
+
+    glib::timeout_add_seconds_local(5, move || {
+        // Her widget'ın refresh metodunda zaten sleep var, burada ekstra yapmaya gerek yok
+        
+        if let Some(ref stats) = system_stats {
+            let mut stats_mut = stats.clone();
+            stats_mut.refresh();
+        }
+        if let Some(ref gov) = current_governor {
+            let mut gov_mut = gov.clone();
+            gov_mut.refresh();
+        }
+        if let Some(ref bat) = battery_info {
+            let mut bat_mut = bat.clone();
+            bat_mut.refresh();
+        }
+        if let Some(ref freq) = cpu_freq_scaling {
+            let mut freq_mut = freq.clone();
+            freq_mut.refresh();
+        }
+        if let Some(ref stats_box) = system_stats_box {
+            let mut stats_box_mut = stats_box.clone();
+            stats_box_mut.refresh();
+        }
+
+        glib::ControlFlow::Continue
+    });
+}
+    fn install_daemon(window: &ApplicationWindow) {
+        use std::process::Command;
+
+        let result = Command::new("pkexec")
+            .arg("auto-cpufreq")
+            .arg("--install")
+            .status();
+
+        match result {
+            Ok(status) if status.success() => {
+                let dialog = MessageDialog::new(
+                    Some(window),
+                    DialogFlags::MODAL,
+                    MessageType::Info,
+                    ButtonsType::Ok,
+                    "Daemon successfully installed",
+                );
+                dialog.set_secondary_text(Some(
+                    "The app will now close. Please reopen to apply changes"
+                ));
+                dialog.connect_response(clone!(@weak window => move |dialog, _| {
+                    dialog.close();
+                    window.close();
+                }));
+                dialog.present();
+            }
+            Ok(status) if status.code() == Some(126) || status.code() == Some(127) => {
+                let dialog = MessageDialog::new(
+                    Some(window),
+                    DialogFlags::MODAL,
+                    MessageType::Error,
+                    ButtonsType::Ok,
+                    "Error installing daemon",
+                );
+                dialog.set_secondary_text(Some("Authorization Failed"));
+                dialog.connect_response(|dialog, _| {
+                    dialog.close();
+                });
+                dialog.present();
+            }
+            Err(e) => {
+                let dialog = MessageDialog::new(
+                    Some(window),
+                    DialogFlags::MODAL,
+                    MessageType::Error,
+                    ButtonsType::Ok,
+                    "Daemon install failed",
+                );
+                dialog.set_secondary_text(Some(&format!("Error: {}", e)));
+                dialog.connect_response(|dialog, _| {
+                    dialog.close();
+                });
+                dialog.present();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn show(&self) {
+        self.window.show();
+    }
+
+    pub fn window(&self) -> &ApplicationWindow {
+        &self.window
+    }
+}
+
+// Monitor Mode View
+pub struct MonitorModeView {
+    container: GtkBox,
+    title: Label,
+    left_box: GtkBox,
+    right_box: GtkBox,
+    running: Rc<RefCell<bool>>,
+}
+
+impl MonitorModeView {
+    pub fn new(parent_window: &ApplicationWindow) -> Self {
+        let container = GtkBox::new(Orientation::Vertical, 5);
+        container.set_margin_start(10);
+        container.set_margin_end(10);
+        container.set_margin_top(10);
+        container.set_margin_bottom(10);
+
+        // Header
+        let header = GtkBox::new(Orientation::Horizontal, 0);
+        header.set_margin_bottom(10);
+
+        let title = Label::new(Some("Monitor Mode"));
+        title.set_widget_name("bold");
+        title.set_halign(gtk::Align::Start);
+        title.set_hexpand(true);
+        header.append(&title);
+
+        let back_button = Button::with_label("Back");
+        let window_weak = parent_window.downgrade();
+        back_button.connect_clicked(move |_| {
+            if let Some(window) = window_weak.upgrade() {
+                // Remove current child
+                window.set_child(gtk::Widget::NONE);
+                
+                // Rebuild daemon not running view
+                let vbox = GtkBox::new(Orientation::Vertical, 10);
+                vbox.set_halign(gtk::Align::Center);
+                vbox.set_valign(gtk::Align::Center);
+
+                let label = Label::new(Some("auto-cpufreq daemon is not running"));
+                let sublabel = Label::new(Some(
+                    "Install the daemon for permanent optimization, or use Monitor mode to preview"
+                ));
+
+                let button_box = GtkBox::new(Orientation::Horizontal, 10);
+                button_box.set_halign(gtk::Align::Center);
+
+                let install_button = Button::with_label("Install Daemon");
+                let monitor_button = Button::with_label("Monitor Mode");
+
+                button_box.append(&install_button);
+                button_box.append(&monitor_button);
+
+                vbox.append(&label);
+                vbox.append(&sublabel);
+                vbox.append(&button_box);
+
+                window.set_child(Some(&vbox));
+                window.show();
+            }
+        });
+        header.append(&back_button);
+
+        container.append(&header);
+
+        // Two column layout
+        let columns = GtkBox::new(Orientation::Horizontal, 20);
+        columns.set_vexpand(true);
+        columns.set_hexpand(true);
+
+        let left_scroll = ScrolledWindow::new();
+        left_scroll.set_vexpand(true);
+        left_scroll.set_hexpand(true);
+        
+        let left_box = GtkBox::new(Orientation::Vertical, 2);
+        left_box.set_valign(gtk::Align::Start);
+        left_scroll.set_child(Some(&left_box));
+
+        let separator = Separator::new(Orientation::Vertical);
+
+        let right_scroll = ScrolledWindow::new();
+        right_scroll.set_vexpand(true);
+        right_scroll.set_hexpand(true);
+        
+        let right_box = GtkBox::new(Orientation::Vertical, 2);
+        right_box.set_valign(gtk::Align::Start);
+        right_scroll.set_child(Some(&right_box));
+
+        columns.append(&left_scroll);
+        columns.append(&separator);
+        columns.append(&right_scroll);
+
+        container.append(&columns);
+
+        let running = Rc::new(RefCell::new(true));
+        
+        let mut view = Self {
+            container,
+            title,
+            left_box,
+            right_box,
+            running,
+        };
+
+        view.refresh();
+        view.setup_refresh();
+        view
+    }
+
+    fn setup_refresh(&self) {
+        let left_box = self.left_box.clone();
+        let right_box = self.right_box.clone();
+        let title = self.title.clone();
+        let running = self.running.clone();
+
+        glib::timeout_add_seconds_local(5, move || {
+            if !*running.borrow() {
+                return glib::ControlFlow::Break;
+            }
+
+            let mut sys = System::new_all();
+            let report = SystemInfo::new().generate_system_report(&mut sys);
+
+            Self::update_display(&left_box, &right_box, &title, &report);
+            glib::ControlFlow::Continue
+        });
+    }
+
+     fn refresh(&mut self) {
+        let mut sys = System::new_all();
+        let report = SystemInfo::new().generate_system_report(&mut sys);
+        Self::update_display(&self.left_box, &self.right_box, &self.title, &report);
+    }
+
+    fn clear_box(box_widget: &GtkBox) {
+        while let Some(child) = box_widget.first_child() {
+            box_widget.remove(&child);
+        }
+    }
+
+    fn create_label(text: &str, halign: gtk::Align) -> Label {
+        let label = Label::new(Some(text));
+        label.set_halign(halign);
+        label.set_selectable(true);
+        label
+    }
+
+    fn create_separator(text: &str) -> Label {
+        let label = Label::new(Some(&format!("{} {} {}", "-".repeat(28), text, "-".repeat(28))));
+        label.set_halign(gtk::Align::Start);
+        label
+    }
+
+    fn update_display(left_box: &GtkBox, right_box: &GtkBox, title: &Label, report: &SystemReport) {
+        Self::clear_box(left_box);
+        Self::clear_box(right_box);
+
+        // Update title with timestamp
+        let current_time = chrono::Local::now().format("%H:%M:%S");
+        title.set_text(&format!("Monitor Mode - {}", current_time));
+
+        // Left column - System Information
+        left_box.append(&Self::create_separator("System Information"));
+        left_box.append(&Self::create_label(&format!("Linux distro: {} {}", report.distro_name, report.distro_ver), gtk::Align::Start));
+        left_box.append(&Self::create_label(&format!("Linux kernel: {}", report.kernel_version), gtk::Align::Start));
+        left_box.append(&Self::create_label(&format!("Processor: {}", report.processor_model), gtk::Align::Start));
+        left_box.append(&Self::create_label(&format!("Cores: {:?}", report.total_core), gtk::Align::Start));
+        left_box.append(&Self::create_label(&format!("Architecture: {}", report.arch), gtk::Align::Start));
+        left_box.append(&Self::create_label(&format!("Driver: {:?}", report.cpu_driver), gtk::Align::Start));
+
+        if crate::CONFIG.has_config() {
+            left_box.append(&Self::create_label(&format!("\nUsing settings defined in {}", crate::CONFIG.get_path().display()), gtk::Align::Start));
+        }
+
+        left_box.append(&Self::create_label("", gtk::Align::Start));
+
+        // CPU Stats
+        left_box.append(&Self::create_separator("Current CPU Stats"));
+        left_box.append(&Self::create_label(
+            &format!("CPU max frequency: {} MHz", report.cpu_max_freq.map_or("Unknown".to_string(), |f| format!("{:.0}", f))),
+            gtk::Align::Start
+        ));
+        left_box.append(&Self::create_label(
+            &format!("CPU min frequency: {} MHz", report.cpu_min_freq.map_or("Unknown".to_string(), |f| format!("{:.0}", f))),
+            gtk::Align::Start
+        ));
+        left_box.append(&Self::create_label("", gtk::Align::Start));
+        left_box.append(&Self::create_label("Core    Usage   Temperature     Frequency", gtk::Align::Start));
+
+        for core in &report.cores_info {
+            left_box.append(&Self::create_label(
+                &format!("CPU{:<2}    {:>4.1}%    {:>6.0} °C    {:>6.0} MHz", core.id, core.usage, core.temperature, core.frequency),
+                gtk::Align::Start
+            ));
+        }
+
+        if let Some(fan) = report.cpu_fan_speed {
+            left_box.append(&Self::create_label("", gtk::Align::Start));
+            left_box.append(&Self::create_label(&format!("CPU fan speed: {} RPM", fan), gtk::Align::Start));
+        }
+
+        // Right column - Battery Stats
+        right_box.append(&Self::create_separator("Battery Stats"));
+        right_box.append(&Self::create_label(&format!("Battery status: {:?}", report.battery_info), gtk::Align::Start));
+        
+        let battery_level = report.battery_info.battery_level
+            .map(|b| format!("{}%", b))
+            .unwrap_or_else(|| "Unknown".to_string());
+        right_box.append(&Self::create_label(&format!("Battery percentage: {}", battery_level), gtk::Align::Start));
+
+        let ac_status = report.battery_info.is_ac_plugged
+            .map(|ac| if ac { "Yes" } else { "No" })
+            .unwrap_or("Unknown");
+        right_box.append(&Self::create_label(&format!("AC plugged: {}", ac_status), gtk::Align::Start));
+
+        let start_threshold = report.battery_info.charging_start_threshold
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+        right_box.append(&Self::create_label(&format!("Charging start threshold: {}", start_threshold), gtk::Align::Start));
+
+        let stop_threshold = report.battery_info.charging_stop_threshold
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+        right_box.append(&Self::create_label(&format!("Charging stop threshold: {}", stop_threshold), gtk::Align::Start));
+        right_box.append(&Self::create_label("", gtk::Align::Start));
+
+        // CPU Frequency Scaling
+        right_box.append(&Self::create_separator("CPU Frequency Scaling"));
+        let current_gov = report.current_gov.as_deref().unwrap_or("Unknown");
+        right_box.append(&Self::create_label(&format!("Setting to use: \"{}\" governor", current_gov), gtk::Align::Start));
+
+        let suggested_gov = SystemInfo::governor_suggestion();
+        if let (Some(current), Some(suggested)) = (&report.current_gov, &suggested_gov) {
+            if current != suggested {
+                right_box.append(&Self::create_label(&format!("Suggesting use of: \"{}\" governor", suggested), gtk::Align::Start));
+            }
+        }
+
+        if let Some(epp) = &report.current_epp {
+            right_box.append(&Self::create_label(&format!("EPP setting: {}", epp), gtk::Align::Start));
+        } else {
+            right_box.append(&Self::create_label("Not setting EPP (not supported by system)", gtk::Align::Start));
+        }
+
+        if let Some(epb) = &report.current_epb {
+            right_box.append(&Self::create_label(&format!("Setting to use: \"{}\" EPB", epb), gtk::Align::Start));
+        }
+
+        right_box.append(&Self::create_label("", gtk::Align::Start));
+
+        // System Statistics
+        right_box.append(&Self::create_separator("System Statistics"));
+        right_box.append(&Self::create_label(&format!("Total CPU usage: {:.1} %", report.cpu_usage), gtk::Align::Start));
+        right_box.append(&Self::create_label(&format!("Total system load: {:.2}", report.load), gtk::Align::Start));
+
+        if !report.cores_info.is_empty() {
+            let avg_temp: f32 = report.cores_info.iter().map(|c| c.temperature).sum::<f32>() / report.cores_info.len() as f32;
+            right_box.append(&Self::create_label(&format!("Average temp. of all cores: {:.2} °C", avg_temp), gtk::Align::Start));
+        }
+
+        if let Some((a, b, c)) = report.avg_load {
+            let load_status = if report.load < 1.0 { "Load optimal" } else { "Load high" };
+            right_box.append(&Self::create_label(
+                &format!("{} (load average: {:.2}, {:.2}, {:.2})", load_status, a, b, c),
+                gtk::Align::Start
+            ));
+        }
+
+        if !report.cores_info.is_empty() {
+            let avg_temp: f32 = report.cores_info.iter().map(|c| c.temperature).sum::<f32>() / report.cores_info.len() as f32;
+            let usage_status = if report.cpu_usage < 70.0 { "Optimal" } else { "High" };
+            let temp_status = if avg_temp > 75.0 { "high" } else { "normal" };
+            right_box.append(&Self::create_label(
+                &format!("{} total CPU usage: {:.1}%, {} average core temp: {:.1}°C", usage_status, report.cpu_usage, temp_status, avg_temp),
+                gtk::Align::Start
+            ));
+        }
+
+        let turbo_status = match (report.is_turbo_on.0, report.is_turbo_on.1) {
+            (Some(on), _) => if on { "On".to_string() } else { "Off".to_string() },
+            (None, Some(auto)) => format!("Auto mode {}", if auto { "enabled" } else { "disabled" }),
+            _ => "Unknown".to_string(),
+        };
+        right_box.append(&Self::create_label(&format!("Setting turbo boost: {}", turbo_status), gtk::Align::Start));
+
+        if let Some(on) = report.is_turbo_on.0 {
+            let mut temp_sys = System::new_all();
+            let suggested_turbo = SystemInfo::turbo_on_suggestion(&mut temp_sys);
+            if suggested_turbo != on {
+                let turbo_text = if suggested_turbo { "on" } else { "off" };
+                right_box.append(&Self::create_label(&format!("Suggesting to set turbo boost: {}", turbo_text), gtk::Align::Start));
+            }
+        }
+    }
+    pub fn widget(&self) -> &GtkBox {  
+        &self.container
+    }
+
+    pub fn cleanup(&self) {  
+        *self.running.borrow_mut() = false;
+    }
+}
+
+impl Drop for MonitorModeView {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+pub fn run_app() {
+    let app = Application::builder()
+        .application_id("org.auto_cpufreq.GUI")
+        .build();
+
+    app.connect_activate(|app| {
+        let tool_window = ToolWindow::new(app);
+        ToolWindow::load_css();
+        
+        // Try to set icon if it exists
+        if std::fs::metadata(icon_file()).is_ok() {
+            let _ = tool_window.borrow().window.set_icon_name(Some("auto-cpufreq"));
+        }
+        
+        tool_window.borrow_mut().build();
+        tool_window.borrow().show();
+    });
+
+    app.run();
+}
+
+
+
+--- FILE: ./gui/mod.rs ---
+
+// src/gui/mod.rs
+
+pub mod app;
+pub mod objects;
+pub mod tray;
+
+pub use app::ToolWindow;
+pub use tray::TrayApp;
+
+
+
+--- FILE: ./gui/tray.rs ---
+
+use ksni::{Tray, TrayService, MenuItem, ToolTip};
+use ksni::menu::StandardItem;
+use std::process::Command;
+use crate::globals::IS_INSTALLED_WITH_SNAP;
+
+fn get_icon_path() -> String {
+    if *IS_INSTALLED_WITH_SNAP {
+        "/snap/auto-cpufreq/current/icon.png".to_string()
+    } else {
+        "/usr/local/share/auto-cpufreq/images/icon.png".to_string()
+    }
+}
+
+pub struct AutoCpufreqTray;
+pub struct TrayApp;
+
+impl Tray for AutoCpufreqTray {
+    fn id(&self) -> String {
+        "auto-cpufreq-tray".into()
+    }
+
+    fn icon_theme_path(&self) -> String {
+        let icon_path = get_icon_path();
+        let path = std::path::Path::new(&icon_path);
+        path.parent()
+            .unwrap_or_else(|| std::path::Path::new("/"))
+            .to_string_lossy()
+            .into()
+    }
+
+    fn icon_name(&self) -> String {
+        "icon".into()
+    }
+
+    fn title(&self) -> String {
+        "auto-cpufreq".into()
+    }
+
+    fn tool_tip(&self) -> ToolTip {
+        ToolTip {
+            title: "auto-cpufreq".into(),
+            description: "CPU Power Management Tool".into(),
+            icon_name: "icon".into(),
+            icon_pixmap: Vec::new(), 
+        }
+    }
+
+    fn menu(&self) -> Vec<MenuItem<Self>> {
+        use ksni::MenuItem::*;
+        vec![
+            Standard(StandardItem {
+                label: "Open GUI".into(),
+                activate: Box::new(|_| {
+                    let _ = Command::new("auto-cpufreq-gtk").spawn();
+                }),
+                ..Default::default()
+            }),
+            Separator,
+            Standard(StandardItem {
+                label: "Quit".into(),
+                activate: Box::new(|_| std::process::exit(0)),
+                ..Default::default()
+            }),
+        ]
+    }
+}
+
+impl TrayApp {
+    pub fn run() {
+        let service = TrayService::new(AutoCpufreqTray);
+        service.spawn();
+        println!("auto-cpufreq tray icon is running via D-Bus...");
+    }
+}
+
+
+
+--- FILE: ./gui/objects.rs ---
+
+// src/gui/objects.rs
+
+use gtk::{self, Box as GtkBox, Button, Label, Orientation, Revealer, RevealerTransitionType, ScrolledWindow};
+use gtk::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::fs;
+use std::process::Command;
+use sysinfo::System; 
+use crate::core::*;
+use crate::globals::*;
+use crate::power_helper::BLUETOOTHCTL_EXISTS;
+use crate::modules::system_info::SystemInfo;
+
+
+fn auto_cpufreq_stats_path() -> &'static str {
+    if *IS_INSTALLED_WITH_SNAP {
+        "/var/snap/auto-cpufreq/current/auto-cpufreq.stats"
+    } else {
+        "/var/run/auto-cpufreq.stats"
+    }
+}
+
+pub fn get_stats() -> String {
+    fs::read_to_string(auto_cpufreq_stats_path())
+        .ok()
+        .map(|content| {
+            content
+                .lines()
+                .rev()
+                .take(50)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+pub fn get_version() -> String {
+    if *IS_INSTALLED_WITH_SNAP {
+        std::env::var("SNAP_VERSION")
+            .map(|v| format!("(Snap) {}", v))
+            .unwrap_or_else(|_| "Unknown".to_string())
+    } else if *IS_INSTALLED_WITH_AUR {
+        Command::new("pacman")
+            .args(&["-Qi", "auto-cpufreq"])
+            .output()
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|s| {
+                s.lines()
+                    .find(|line| line.contains("Version"))
+                    .map(String::from)
+            })
+            .unwrap_or_else(|| "Unknown".to_string())
+    } else {
+        get_formatted_version().unwrap_or_else(|_| "Unknown".to_string())
+    }
+}
+
+pub fn get_bluetooth_boot_status() -> Option<String> {
+    if !*BLUETOOTHCTL_EXISTS {
+        return None;
+    }
+
+    let btconf = "/etc/bluetooth/main.conf";
+    match fs::read_to_string(btconf) {
+        Ok(content) => {
+            let mut in_policy_section = false;
+            for line in content.lines() {
+                let stripped = line.trim();
+                
+                if stripped.starts_with('[') {
+                    in_policy_section = stripped.to_lowercase() == "[policy]";
+                    continue;
+                }
+                
+                if !in_policy_section || stripped.starts_with('#') || stripped.is_empty() {
+                    continue;
+                }
+                
+                if stripped.starts_with("AutoEnable=") {
+                    let value = stripped.split('=').nth(1)?.trim().to_lowercase();
+                    return Some(if value == "true" { "on" } else { "off" }.to_string());
+                }
+            }
+            Some("on".to_string())
+        }
+        Err(_) => None,
+    }
+}
+
+// RadioButtonView for Governor Override
+pub struct RadioButtonView {
+    container: GtkBox,
+    default: Button,
+    powersave: Button,
+    performance: Button,
+    set_by_app: Rc<RefCell<bool>>,
+    selected: Rc<RefCell<Option<String>>>,
+}
+
+impl RadioButtonView {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Horizontal, 5);
+        container.set_hexpand(true);
+
+        let label = Label::new(Some("Governor Override"));
+        label.set_widget_name("bold");
+
+        let default = Button::with_label("Default");
+        default.set_halign(gtk::Align::End);
+        let powersave = Button::with_label("Powersave");
+        powersave.set_halign(gtk::Align::End);
+        let performance = Button::with_label("Performance");
+        performance.set_halign(gtk::Align::End);
+
+        let set_by_app = Rc::new(RefCell::new(true));
+        let selected = Rc::new(RefCell::new(Some("Default".to_string())));
+
+        // Manual radio logic: only one can be selected
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        let default_clone = default.clone();
+        let powersave_clone = powersave.clone();
+        let performance_clone = performance.clone();
+        
+        default.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Default".to_string());
+                Self::on_button_toggled("reset");
+                // Update button states
+                default_clone.set_sensitive(false);
+                powersave_clone.set_sensitive(true);
+                performance_clone.set_sensitive(true);
+            }
+        });
+
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        let default_clone2 = default.clone();
+        let powersave_clone2 = powersave.clone();
+        let performance_clone2 = performance.clone();
+        
+        powersave.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Powersave".to_string());
+                Self::on_button_toggled("powersave");
+                // Update button states
+                default_clone2.set_sensitive(true);
+                powersave_clone2.set_sensitive(false);
+                performance_clone2.set_sensitive(true);
+            }
+        });
+
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        let default_clone3 = default.clone();
+        let powersave_clone3 = powersave.clone();
+        let performance_clone3 = performance.clone();
+        
+        performance.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Performance".to_string());
+                Self::on_button_toggled("performance");
+                // Update button states
+                default_clone3.set_sensitive(true);
+                powersave_clone3.set_sensitive(true);
+                performance_clone3.set_sensitive(false);
+            }
+        });
+
+        container.append(&label);
+        container.append(&default);
+        container.append(&powersave);
+        container.append(&performance);
+
+        let mut view = Self {
+            container,
+            default,
+            powersave,
+            performance,
+            set_by_app,
+            selected,
+        };
+        view.set_selected();
+        view
+    }
+
+    fn on_button_toggled(override_val: &str) {
+        let result = Command::new("pkexec")
+            .arg("auto-cpufreq")
+            .arg(format!("--force={}", override_val))
+            .status();
+
+        if let Ok(status) = result {
+            if status.code() == Some(126) || status.code() == Some(127) {
+                eprintln!("Authorization failed");
+            }
+        }
+    }
+
+    fn set_selected(&mut self) {
+        *self.set_by_app.borrow_mut() = true;
+        let state = AutoCpuFreqState::new();
+        let override_val = get_override(&state);
+        let (label, active_btn) = match override_val {
+            GovernorOverride::Powersave => ("Powersave", 1),
+            GovernorOverride::Performance => ("Performance", 2),
+            GovernorOverride::Default => ("Default", 0),
+        };
+        *self.selected.borrow_mut() = Some(label.to_string());
+        
+        // Update button states
+        self.default.set_sensitive(active_btn != 0);
+        self.powersave.set_sensitive(active_btn != 1);
+        self.performance.set_sensitive(active_btn != 2);
+        
+        *self.set_by_app.borrow_mut() = false;
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// CPUTurboOverride widget
+pub struct CPUTurboOverride {
+    container: GtkBox,
+    auto: Button,
+    never: Button,
+    always: Button,
+    set_by_app: Rc<RefCell<bool>>,
+    selected: Rc<RefCell<Option<String>>>,
+}
+
+impl CPUTurboOverride {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Horizontal, 5);
+        container.set_hexpand(true);
+
+        let label = Label::new(Some("CPU Turbo Override"));
+        label.set_widget_name("bold");
+
+        let auto = Button::with_label("Auto");
+        auto.set_halign(gtk::Align::End);
+        let never = Button::with_label("Never");
+        never.set_halign(gtk::Align::End);
+        let always = Button::with_label("Always");
+        always.set_halign(gtk::Align::End);
+
+        let set_by_app = Rc::new(RefCell::new(true));
+        let selected = Rc::new(RefCell::new(Some("Auto".to_string())));
+
+        // Manual radio logic: only one can be selected
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        let auto_clone = auto.clone();
+        let never_clone = never.clone();
+        let always_clone = always.clone();
+        
+        auto.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Auto".to_string());
+                Self::on_button_toggled("auto");
+                // Update button states
+                auto_clone.set_sensitive(false);
+                never_clone.set_sensitive(true);
+                always_clone.set_sensitive(true);
+            }
+        });
+
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        let auto_clone2 = auto.clone();
+        let never_clone2 = never.clone();
+        let always_clone2 = always.clone();
+        
+        never.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Never".to_string());
+                Self::on_button_toggled("never");
+                // Update button states
+                auto_clone2.set_sensitive(true);
+                never_clone2.set_sensitive(false);
+                always_clone2.set_sensitive(true);
+            }
+        });
+
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        let auto_clone3 = auto.clone();
+        let never_clone3 = never.clone();
+        let always_clone3 = always.clone();
+        
+        always.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Always".to_string());
+                Self::on_button_toggled("always");
+                // Update button states
+                auto_clone3.set_sensitive(true);
+                never_clone3.set_sensitive(true);
+                always_clone3.set_sensitive(false);
+            }
+        });
+
+        container.append(&label);
+        container.append(&auto);
+        container.append(&never);
+        container.append(&always);
+
+        let mut view = Self {
+            container,
+            auto,
+            never,
+            always,
+            set_by_app,
+            selected,
+        };
+        view.set_selected();
+        view
+    }
+
+    fn on_button_toggled(override_val: &str) {
+        let result = Command::new("pkexec")
+            .arg("auto-cpufreq")
+            .arg(format!("--turbo={}", override_val))
+            .status();
+
+        if let Ok(status) = result {
+            if status.code() == Some(126) || status.code() == Some(127) {
+                eprintln!("Authorization failed");
+            }
+        }
+    }
+
+    fn set_selected(&mut self) {
+        *self.set_by_app.borrow_mut() = true;
+        let state = AutoCpuFreqState::new();
+        let override_val = get_turbo_override(&state);
+        let (label, active_btn) = match override_val {
+            TurboOverride::Auto => ("Auto", 0),
+            TurboOverride::Never => ("Never", 1),
+            TurboOverride::Always => ("Always", 2),
+        };
+        *self.selected.borrow_mut() = Some(label.to_string());
+        
+        // Update button states
+        self.auto.set_sensitive(active_btn != 0);
+        self.never.set_sensitive(active_btn != 1);
+        self.always.set_sensitive(active_btn != 2);
+        
+        *self.set_by_app.borrow_mut() = false;
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// BluetoothBootControl widget
+pub struct BluetoothBootControl {
+    container: GtkBox,
+    _advanced_btn: Button,
+    _revealer: Revealer,
+    on_btn: Button,
+    off_btn: Button,
+    set_by_app: Rc<RefCell<bool>>,
+    selected: Rc<RefCell<Option<String>>>,
+}
+
+impl BluetoothBootControl {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Vertical, 10);
+        container.set_hexpand(true);
+
+        let advanced_btn = Button::with_label("Advanced Settings");
+        advanced_btn.set_halign(gtk::Align::Start);
+
+        let revealer = Revealer::new();
+        revealer.set_transition_type(RevealerTransitionType::SlideDown);
+        revealer.set_transition_duration(200);
+
+        let inner_box = GtkBox::new(Orientation::Horizontal, 5);
+        inner_box.set_hexpand(true);
+
+        let label = Label::new(Some("Bluetooth on Boot"));
+        label.set_widget_name("bold");
+        let on_btn = Button::with_label("On");
+        on_btn.set_halign(gtk::Align::End);
+        let off_btn = Button::with_label("Off");
+        off_btn.set_halign(gtk::Align::End);
+
+        let selected = Rc::new(RefCell::new(Some("On".to_string())));
+        let set_by_app = Rc::new(RefCell::new(true));
+
+        inner_box.append(&label);
+        inner_box.append(&on_btn);
+        inner_box.append(&off_btn);
+
+        revealer.set_child(Some(&inner_box));
+
+        container.append(&advanced_btn);
+        container.append(&revealer);
+
+        // Connect advanced button
+        let revealer_clone = revealer.clone();
+        let btn_clone = advanced_btn.clone();
+        advanced_btn.connect_clicked(move |_| {
+            let revealed = revealer_clone.reveals_child();
+            revealer_clone.set_reveal_child(!revealed);
+            if revealed {
+                btn_clone.set_label("Advanced Settings");
+            } else {
+                btn_clone.set_label("Hide Advanced Settings");
+            }
+        });
+
+        // Manual radio logic: only one can be selected
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        let on_clone = on_btn.clone();
+        let off_clone = off_btn.clone();
+        
+        on_btn.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("On".to_string());
+                Self::on_button_toggled("on");
+                on_clone.set_sensitive(false);
+                off_clone.set_sensitive(true);
+            }
+        });
+
+        let sel_clone = selected.clone();
+        let set_by_app_clone = set_by_app.clone();
+        let on_clone2 = on_btn.clone();
+        let off_clone2 = off_btn.clone();
+        
+        off_btn.connect_clicked(move |_| {
+            if !*set_by_app_clone.borrow() {
+                *sel_clone.borrow_mut() = Some("Off".to_string());
+                Self::on_button_toggled("off");
+                on_clone2.set_sensitive(true);
+                off_clone2.set_sensitive(false);
+            }
+        });
+
+        let mut control = Self {
+            container,
+            _advanced_btn: advanced_btn,
+            _revealer: revealer,
+            on_btn,
+            off_btn,
+            set_by_app,
+            selected,
+        };
+
+        control.set_selected();
+        control
+    }
+
+    fn on_button_toggled(action: &str) {
+        let arg = if action == "on" {
+            "--bluetooth_boot_on"
+        } else {
+            "--bluetooth_boot_off"
+        };
+
+        let result = Command::new("pkexec")
+            .arg("auto-cpufreq")
+            .arg(arg)
+            .status();
+
+        if let Ok(status) = result {
+            if status.code() == Some(126) || status.code() == Some(127) {
+                eprintln!("Authorization failed");
+            }
+        }
+    }
+
+    fn set_selected(&mut self) {
+        *self.set_by_app.borrow_mut() = true;
+        // Set the selected field based on status
+        let active_btn = match get_bluetooth_boot_status() {
+            Some(status) if status == "off" => {
+                *self.selected.borrow_mut() = Some("Off".to_string());
+                1
+            }
+            _ => {
+                *self.selected.borrow_mut() = Some("On".to_string());
+                0
+            }
+        };
+        
+        self.on_btn.set_sensitive(active_btn != 0);
+        self.off_btn.set_sensitive(active_btn != 1);
+        
+        *self.set_by_app.borrow_mut() = false;
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// CurrentGovernorBox
+#[derive(Clone)]
+pub struct CurrentGovernorBox {
+    container: GtkBox,
+    governor_label: Label,
+}
+
+impl CurrentGovernorBox {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Horizontal, 25);
+
+        let static_label = Label::new(Some("Current Governor"));
+        static_label.set_widget_name("bold");
+
+        let governor_label = Label::new(Some(""));
+        governor_label.set_halign(gtk::Align::End);
+
+        container.append(&static_label);
+        container.append(&governor_label);
+
+        let mut box_widget = Self {
+            container,
+            governor_label,
+        };
+
+        box_widget.refresh();
+        box_widget
+    }
+
+    pub fn refresh(&mut self) {
+        if let Ok(gov) = get_current_gov() {
+            self.governor_label.set_text(&gov);
+        }
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// BatteryInfoBox
+#[derive(Clone)]
+pub struct BatteryInfoBox {
+    container: GtkBox,
+    status_label: Label,
+    percentage_label: Label,
+    ac_label: Label,
+    start_threshold_label: Label,
+    stop_threshold_label: Label,
+}
+
+impl BatteryInfoBox {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Vertical, 2);
+
+        let header = Label::new(Some(&("-".repeat(20) + " Battery Stats " + &"-".repeat(20))));
+        header.set_halign(gtk::Align::Start);
+
+        let status_label = Label::new(Some(""));
+        status_label.set_halign(gtk::Align::Start);
+
+        let percentage_label = Label::new(Some(""));
+        percentage_label.set_halign(gtk::Align::Start);
+
+        let ac_label = Label::new(Some(""));
+        ac_label.set_halign(gtk::Align::Start);
+
+        let start_threshold_label = Label::new(Some(""));
+        start_threshold_label.set_halign(gtk::Align::Start);
+
+        let stop_threshold_label = Label::new(Some(""));
+        stop_threshold_label.set_halign(gtk::Align::Start);
+
+        container.append(&header);
+        container.append(&status_label);
+        container.append(&percentage_label);
+        container.append(&ac_label);
+        container.append(&start_threshold_label);
+        container.append(&stop_threshold_label);
+
+        let mut box_widget = Self {
+            container,
+            status_label,
+            percentage_label,
+            ac_label,
+            start_threshold_label,
+            stop_threshold_label,
+        };
+
+        box_widget.refresh();
+        box_widget
+    }
+
+    pub fn refresh(&mut self) {
+        let battery_info = SystemInfo::battery_info();
+
+        // Simplified battery status
+        let status = if battery_info.is_charging.unwrap_or(false) {
+            "Charging"
+        } else if battery_info.is_ac_plugged.unwrap_or(true) {
+            "Charged"
+        } else {
+            "Discharging"
+        };
+        self.status_label.set_text(&format!("Battery status: {}", status));
+
+        let percentage_text = battery_info.battery_level
+            .map(|b| format!("{}%", b))
+            .unwrap_or_else(|| "Unknown".to_string());
+        self.percentage_label.set_text(&format!("Battery level: {}", percentage_text));
+
+        let ac_text = battery_info.is_ac_plugged
+            .map(|ac| if ac { "Yes" } else { "No" })
+            .unwrap_or("Unknown");
+        self.ac_label.set_text(&format!("AC plugged: {}", ac_text));
+
+        let start_text = battery_info.charging_start_threshold
+            .map(|t| format!("{}%", t))
+            .unwrap_or_else(|| "Not set".to_string());
+        self.start_threshold_label.set_text(&format!("Start threshold: {}", start_text));
+
+        let stop_text = battery_info.charging_stop_threshold
+            .map(|t| format!("{}%", t))
+            .unwrap_or_else(|| "Not set".to_string());
+        self.stop_threshold_label.set_text(&format!("Stop threshold: {}", stop_text));
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// CPUFreqScalingBox
+#[derive(Clone)]
+pub struct CPUFreqScalingBox {
+    container: GtkBox,
+    governor_label: Label,
+    epp_label: Label,
+    epb_label: Label,
+}
+
+impl CPUFreqScalingBox {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Vertical, 2);
+
+        let header = Label::new(Some(&("-".repeat(20) + " CPU Frequency Scaling " + &"-".repeat(20))));
+        header.set_halign(gtk::Align::Start);
+
+        let governor_label = Label::new(Some(""));
+        governor_label.set_halign(gtk::Align::Start);
+
+        let epp_label = Label::new(Some(""));
+        epp_label.set_halign(gtk::Align::Start);
+
+        let epb_label = Label::new(Some(""));
+        epb_label.set_halign(gtk::Align::Start);
+
+        container.append(&header);
+        container.append(&governor_label);
+        container.append(&epp_label);
+        container.append(&epb_label);
+
+        let mut box_widget = Self {
+            container,
+            governor_label,
+            epp_label,
+            epb_label,
+        };
+
+        box_widget.refresh();
+        box_widget
+    }
+
+    pub fn refresh(&mut self) {
+        let mut sys = System::new_all();
+        sys.refresh_cpu();
+        // Sleep to get accurate CPU readings
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_cpu();
+        
+        let report = SystemInfo::new().generate_system_report(&mut sys);
+
+        let gov = report.current_gov.unwrap_or_else(|| "Unknown".to_string());
+        self.governor_label.set_text(&format!("Setting to use: \"{}\" governor", gov));
+
+        if let Some(epp) = report.current_epp {
+            self.epp_label.set_text(&format!("EPP setting: {}", epp));
+            self.epp_label.set_visible(true);
+        } else {
+            self.epp_label.set_text("Not setting EPP (not supported by system)");
+            self.epp_label.set_visible(true);
+        }
+
+        if let Some(epb) = report.current_epb {
+            self.epb_label.set_text(&format!("Setting to use: \"{}\" EPB", epb));
+            self.epb_label.set_visible(true);
+        } else {
+            self.epb_label.set_visible(false);
+        }
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// SystemStatisticsBox
+#[derive(Clone)]
+pub struct SystemStatisticsBox {
+    container: GtkBox,
+    cpu_usage_label: Label,
+    load_label: Label,
+    temp_label: Label,
+    fan_label: Label,
+    load_status_label: Label,
+    usage_status_label: Label,
+    turbo_label: Label,
+}
+
+impl SystemStatisticsBox {
+    pub fn new() -> Self {
+        let container = GtkBox::new(Orientation::Vertical, 2);
+
+        let header = Label::new(Some(&("-".repeat(20) + " System Statistics " + &"-".repeat(20))));
+        header.set_halign(gtk::Align::Start);
+
+        let cpu_usage_label = Label::new(Some(""));
+        cpu_usage_label.set_halign(gtk::Align::Start);
+
+        let load_label = Label::new(Some(""));
+        load_label.set_halign(gtk::Align::Start);
+
+        let temp_label = Label::new(Some(""));
+        temp_label.set_halign(gtk::Align::Start);
+
+        let fan_label = Label::new(Some(""));
+        fan_label.set_halign(gtk::Align::Start);
+
+        let load_status_label = Label::new(Some(""));
+        load_status_label.set_halign(gtk::Align::Start);
+
+        let usage_status_label = Label::new(Some(""));
+        usage_status_label.set_halign(gtk::Align::Start);
+
+        let turbo_label = Label::new(Some(""));
+        turbo_label.set_halign(gtk::Align::Start);
+
+        container.append(&header);
+        container.append(&cpu_usage_label);
+        container.append(&load_label);
+        container.append(&temp_label);
+        container.append(&fan_label);
+        container.append(&load_status_label);
+        container.append(&usage_status_label);
+        container.append(&turbo_label);
+
+        let mut box_widget = Self {
+            container,
+            cpu_usage_label,
+            load_label,
+            temp_label,
+            fan_label,
+            load_status_label,
+            usage_status_label,
+            turbo_label,
+        };
+
+        box_widget.refresh();
+        box_widget
+    }
+
+    pub fn refresh(&mut self) {
+        let mut sys = System::new_all();
+        sys.refresh_cpu();
+        // Sleep to get accurate CPU readings
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_cpu();
+        
+        let report = SystemInfo::new().generate_system_report(&mut sys);
+
+        self.cpu_usage_label.set_text(&format!("Total CPU usage: {:.1} %", report.cpu_usage));
+        self.load_label.set_text(&format!("Total system load: {:.2}", report.load));
+
+        if !report.cores_info.is_empty() {
+            let avg_temp: f32 = report.cores_info.iter().map(|c| c.temperature).sum::<f32>() / report.cores_info.len() as f32;
+            self.temp_label.set_text(&format!("Average temp. of all cores: {:.2} °C", avg_temp));
+            self.temp_label.set_visible(true);
+        } else {
+            self.temp_label.set_visible(false);
+        }
+
+        if let Some(fan) = report.cpu_fan_speed {
+            self.fan_label.set_text(&format!("CPU fan speed: {} RPM", fan));
+            self.fan_label.set_visible(true);
+        } else {
+            self.fan_label.set_visible(false);
+        }
+
+        if let Some((a, b, c)) = report.avg_load {
+            let load_status = if report.load < 1.0 { "Load optimal" } else { "Load high" };
+            self.load_status_label.set_text(&format!("{} (load average: {:.2}, {:.2}, {:.2})", load_status, a, b, c));
+            self.load_status_label.set_visible(true);
+        } else {
+            self.load_status_label.set_visible(false);
+        }
+
+        if !report.cores_info.is_empty() {
+            let avg_temp: f32 = report.cores_info.iter().map(|c| c.temperature).sum::<f32>() / report.cores_info.len() as f32;
+            let usage_status = if report.cpu_usage < 70.0 { "Optimal" } else { "High" };
+            let temp_status = if avg_temp > 75.0 { "high" } else { "normal" };
+            self.usage_status_label.set_text(&format!("{} total CPU usage: {:.1}%, {} average core temp: {:.1}°C", usage_status, report.cpu_usage, temp_status, avg_temp));
+            self.usage_status_label.set_visible(true);
+        } else {
+            self.usage_status_label.set_visible(false);
+        }
+
+        let turbo_status = match (report.is_turbo_on.0, report.is_turbo_on.1) {
+            (Some(on), _) => if on { "On" } else { "Off" }.to_string(),
+            (None, Some(auto)) => format!("Auto mode {}", if auto { "enabled" } else { "disabled" }),
+            _ => "Unknown".into(),
+        };
+        self.turbo_label.set_text(&format!("Setting turbo boost: {}", turbo_status));
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.container
+    }
+}
+
+// SystemStatsLabel
+#[derive(Clone)]
+pub struct SystemStatsLabel {
+    scrolled: ScrolledWindow,
+    label: Label,
+}
+
+impl SystemStatsLabel {
+    pub fn new() -> Self {
+        let scrolled = ScrolledWindow::new();
+        scrolled.set_vexpand(true);
+        scrolled.set_hexpand(true);
+        
+        let label = Label::new(Some(""));
+        label.set_halign(gtk::Align::Start);
+        label.set_valign(gtk::Align::Start);
+        label.set_selectable(true);
+        
+        scrolled.set_child(Some(&label));
+
+        let mut stats = Self { scrolled, label };
+        stats.refresh();
+        stats
+    }
+
+    pub fn refresh(&mut self) {
+        let sys_info = SystemInfo::new();
+        let mut sys = System::new_all();
+        sys.refresh_cpu();
+        // Sleep to get accurate CPU readings
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_cpu();
+        
+        let mut text = String::new();
+        
+        text.push_str("System Information\n\n");
+        text.push_str(&format!("Linux distro: {} {}\n", sys_info.distro_name, sys_info.distro_version));
+        text.push_str(&format!("Linux kernel: {}\n", sys_info.kernel_version));
+        text.push_str(&format!("Processor: {}\n", sys_info.processor_model));
+        text.push_str(&format!("Cores: {}\n", sys_info.total_cores.map_or("Unknown".to_string(), |c| c.to_string())));
+        text.push_str(&format!("Architecture: {}\n", sys_info.architecture));
+        text.push_str(&format!("Driver: {}\n\n", sys_info.cpu_driver.as_deref().unwrap_or("Unknown")));
+        
+        if crate::CONFIG.has_config() {
+            text.push_str(&format!("Using settings defined in {} file\n\n", crate::CONFIG.get_path().display()));
+        }
+        
+        text.push_str("Current CPU Stats\n\n");
+        let max_freq = SystemInfo::cpu_max_freq();
+        let min_freq = SystemInfo::cpu_min_freq();
+        text.push_str(&format!("CPU max frequency: {} MHz\n", 
+            max_freq.map_or("Unknown".to_string(), |f| format!("{:.0}", f))));
+        text.push_str(&format!("CPU min frequency: {} MHz\n\n", 
+            min_freq.map_or("Unknown".to_string(), |f| format!("{:.0}", f))));
+        
+        text.push_str("Core    Usage   Temperature     Frequency\n");
+        
+        let cores = SystemInfo::get_cpu_info(&mut sys);
+        for core in cores {
+            text.push_str(&format!("CPU{:<2}    {:>4.1}%    {:>6.0} °C    {:>6.0} MHz\n",
+                core.id, core.usage, core.temperature, core.frequency));
+        }
+        
+        if let Some(fan) = SystemInfo::cpu_fan_speed() {
+            text.push_str(&format!("\nCPU fan speed: {} RPM\n", fan));
+        }
+
+        self.label.set_text(&text);
+    }
+
+    pub fn widget(&self) -> &ScrolledWindow {
+        &self.scrolled
+    }
+}
+
+
+
+--- FILE: ./lib.rs ---
+
+pub mod globals;
+pub mod tlp_stat_parser;
+pub mod power_helper;
+pub mod config;
+pub mod core;
+pub mod battery;
+pub mod modules;
+
+// Re-exports
+pub use globals::*;
+pub use config::{CONFIG, find_config_file}; // CONFIG re-export now works
+
+#[cfg(feature = "gui")]
+pub mod gui;
+
+
+
+--- FILE: ./modules/mod.rs ---
+
+pub mod system_info;
+pub mod system_monitor;
+
+// Re-export commonly used items
+pub use system_info::*;
+pub use system_monitor::*;
+
+
+
+--- FILE: ./modules/system_info.rs ---
+
+// src/modules/system_info.rs
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use sysinfo::System;
+
+use crate::CONFIG;
+use crate::POWER_SUPPLY_DIR;
+use crate::AVAILABLE_GOVERNORS_SORTED;
+
+#[derive(Debug, Clone)]
+pub struct CoreInfo {
+    pub id: usize,
+    pub usage: f32,
+    pub temperature: f32,
+    pub frequency: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct BatteryInfo {
+    pub is_charging: Option<bool>,
+    pub is_ac_plugged: Option<bool>,
+    pub charging_start_threshold: Option<i32>,
+    pub charging_stop_threshold: Option<i32>,
+    pub battery_level: Option<u8>,
+    pub power_consumption: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SystemReport {
+    pub distro_name: String,
+    pub distro_ver: String,
+    pub arch: String,
+    pub processor_model: String,
+    pub total_core: Option<usize>,
+    pub kernel_version: String,
+    pub current_gov: Option<String>,
+    pub current_epp: Option<String>,
+    pub current_epb: Option<String>,
+    pub cpu_driver: Option<String>,
+    pub cpu_fan_speed: Option<i32>,
+    pub cpu_usage: f32,
+    pub cpu_max_freq: Option<f32>,
+    pub cpu_min_freq: Option<f32>,
+    pub load: f32,
+    pub avg_load: Option<(f32,f32,f32)>,
+    pub cores_info: Vec<CoreInfo>,
+    pub battery_info: BatteryInfo,
+    pub is_turbo_on: (Option<bool>, Option<bool>),
+}
+
+pub struct SystemInfo {
+    pub distro_name: String,
+    pub distro_version: String,
+    pub architecture: String,
+    pub processor_model: String,
+    pub total_cores: Option<usize>,
+    pub cpu_driver: Option<String>,
+    pub kernel_version: String,
+}
+
+impl SystemInfo {
+    pub fn new() -> Self {
+        let distro_name = Self::read_os_release_name().unwrap_or_else(|| "UNKNOWN".into());
+        let distro_version = Self::read_os_release_version().unwrap_or_else(|| "UNKNOWN".into());
+        let architecture = std::env::consts::ARCH.to_string();
+        let processor_model = Self::read_file_single("/proc/cpuinfo")
+            .and_then(|s| s.lines().find(|l| l.contains("model name")).map(|l| l.split(':').last().unwrap_or("").trim().to_string()))
+            .unwrap_or_default();
+        let total_cores = Some(num_cpus::get());
+        let cpu_driver = Self::read_file_single("/sys/devices/system/cpu/cpu0/cpufreq/scaling_driver");
+        let kernel_version = Self::uname_release().unwrap_or_default();
+
+        Self {
+            distro_name,
+            distro_version,
+            architecture,
+            processor_model,
+            total_cores,
+            cpu_driver,
+            kernel_version,
+        }
+    }
+
+    fn read_file_single<P: AsRef<Path>>(path: P) -> Option<String> {
+        fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+    }
+
+    fn read_os_release_name() -> Option<String> {
+        if let Ok(content) = fs::read_to_string("/etc/os-release") {
+            for line in content.lines() {
+                if line.starts_with("PRETTY_NAME=") {
+                    return Some(line.splitn(2, '=').nth(1).unwrap_or("").trim_matches('"').to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn read_os_release_version() -> Option<String> {
+        if let Ok(content) = fs::read_to_string("/etc/os-release") {
+            for line in content.lines() {
+                if line.starts_with("VERSION=") {
+                    return Some(line.splitn(2, '=').nth(1).unwrap_or("").trim_matches('"').to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn uname_release() -> Option<String> {
+        std::process::Command::new("uname").arg("-r").output().ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+    }
+
+    pub fn cpu_min_freq() -> Option<f32> {
+        Self::read_file_single("/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq")
+            .and_then(|s| s.parse::<f32>().ok())
+            .map(|khl| khl / 1000.0)
+    }
+
+    pub fn cpu_max_freq() -> Option<f32> {
+        Self::read_file_single("/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq")
+            .and_then(|s| s.parse::<f32>().ok())
+            .map(|khl| khl / 1000.0)
+    }
+
+    /// Read CPU core temperature from hwmon sensors
+    fn read_cpu_temperature(core_id: usize) -> f32 {
+        let sensor_priority = ["coretemp", "k10temp", "zenpower", "acpitz"];
+        let hwmon_path = "/sys/class/hwmon";
+        
+        if let Ok(entries) = fs::read_dir(hwmon_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name_file = path.join("name");
+                
+                if let Ok(sensor_name) = fs::read_to_string(&name_file) {
+                    let sensor_name = sensor_name.trim();
+                    
+                    if sensor_priority.contains(&sensor_name) {
+                        // For coretemp: temp1 = Package, temp2+ = cores
+                        // Try temp{core_id + 2}_input first, then iterate
+                        let preferred_temp_id = core_id + 2;
+                        
+                        for temp_id in preferred_temp_id..20 {
+                            let temp_file = path.join(format!("temp{}_input", temp_id));
+                            
+                            if temp_file.exists() {
+                                if let Ok(temp_str) = fs::read_to_string(&temp_file) {
+                                    if let Ok(temp_millidegrees) = temp_str.trim().parse::<f32>() {
+                                        return temp_millidegrees / 1000.0;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Fallback: use package temp for all cores
+                        let temp_input = path.join("temp1_input");
+                        if let Ok(temp_str) = fs::read_to_string(&temp_input) {
+                            if let Ok(temp) = temp_str.trim().parse::<f32>() {
+                                return temp / 1000.0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        0.0
+    }
+
+    // System nesnesini parametre olarak alıyoruz
+    pub fn get_cpu_info(sys: &mut System) -> Vec<CoreInfo> {
+        sys.refresh_cpu();  // Her çağrıda refresh yapıyoruz
+
+        let cpus = sys.cpus();
+        let mut cores = Vec::new();
+
+        for (i, cpu) in cpus.iter().enumerate() {
+            let usage = cpu.cpu_usage();
+            let frequency = cpu.frequency() as f32;
+            let temperature = Self::read_cpu_temperature(i);
+
+            cores.push(CoreInfo {
+                id: i,
+                usage,
+                temperature,
+                frequency,
+            });
+        }
+
+        cores
+    }
+
+    pub fn cpu_fan_speed() -> Option<i32> {
+        // Try to read fan speed from hwmon
+        let hwmon_path = "/sys/class/hwmon";
+        
+        if let Ok(entries) = fs::read_dir(hwmon_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                
+                // Look for fan1_input (most common)
+                let fan_input = path.join("fan1_input");
+                if fan_input.exists() {
+                    if let Ok(fan_str) = fs::read_to_string(&fan_input) {
+                        if let Ok(rpm) = fan_str.trim().parse::<i32>() {
+                            if rpm > 0 {
+                                return Some(rpm);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        None
+    }
+
+    pub fn current_gov() -> Option<String> {
+        Self::read_file_single("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+    }
+
+    pub fn current_epp(is_ac_plugged: bool) -> Option<String> {
+        let epp_path = Path::new("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference");
+        if !epp_path.exists() {
+            return None;
+        }
+
+        let section = if is_ac_plugged { "charger" } else { "battery" };
+        Some(CONFIG.get(section, "energy_performance_preference", "balance_power"))
+    }
+
+    pub fn current_epb(is_ac_plugged: bool) -> Option<String> {
+        let epb_path = Path::new("/sys/devices/system/cpu/intel_pstate");
+        if !epb_path.exists() {
+            return None;
+        }
+        let section = if is_ac_plugged { "charger" } else { "battery" };
+        Some(CONFIG.get(section, "energy_perf_bias", "balance_power"))
+    }
+
+    // System nesnesini parametre olarak alıyoruz
+    pub fn cpu_usage(sys: &mut System) -> f32 {
+        sys.refresh_cpu();  // Her çağrıda refresh yapıyoruz
+        
+        let cpus = sys.cpus();
+        if cpus.is_empty() {
+            return 0.0;
+        }
+        let sum: f32 = cpus.iter().map(|c| c.cpu_usage()).sum();
+        sum / (cpus.len() as f32)
+    }
+
+    pub fn system_load() -> f32 {
+        if let Ok(s) = fs::read_to_string("/proc/loadavg") {
+            if let Some(first) = s.split_whitespace().next() {
+                return first.parse::<f32>().unwrap_or(0.0);
+            }
+        }
+        0.0
+    }
+
+    pub fn avg_load() -> Option<(f32,f32,f32)> {
+        if let Ok(s) = fs::read_to_string("/proc/loadavg") {
+            let mut parts = s.split_whitespace();
+            let a = parts.next().and_then(|p| p.parse::<f32>().ok());
+            let b = parts.next().and_then(|p| p.parse::<f32>().ok());
+            let c = parts.next().and_then(|p| p.parse::<f32>().ok());
+            if let (Some(a), Some(b), Some(c)) = (a,b,c) {
+                return Some((a,b,c));
+            }
+        }
+        None
+    }
+
+    // avg_temp artık System parametresi alıyor
+    pub fn avg_temp(sys: &mut System) -> i32 {
+        let temps: Vec<f32> = Self::get_cpu_info(sys)
+            .iter()
+            .map(|c| c.temperature)
+            .filter(|&t| t > 0.0)
+            .collect();
+        
+        if temps.is_empty() { 
+            0 
+        } else { 
+            (temps.iter().sum::<f32>() / temps.len() as f32) as i32 
+        }
+    }
+
+    pub fn turbo_on() -> (Option<bool>, Option<bool>) {
+        let intel_pstate = Path::new("/sys/devices/system/cpu/intel_pstate/no_turbo");
+        let cpu_freq = Path::new("/sys/devices/system/cpu/cpufreq/boost");
+        let amd_pstate = Path::new("/sys/devices/system/cpu/amd_pstate/status");
+
+        if intel_pstate.exists() {
+            if let Some(v) = Self::read_file_single(intel_pstate) {
+                if let Ok(n) = v.parse::<i32>() {
+                    return (Some((n != 0) == false), Some(false));
+                }
+            }
+            return (None, None);
+        }
+
+        if cpu_freq.exists() {
+            if let Some(v) = Self::read_file_single(cpu_freq) {
+                if let Ok(n) = v.parse::<i32>() {
+                    return (Some(n != 0), Some(false));
+                }
+            }
+            return (None, None);
+        }
+
+        if amd_pstate.exists() {
+            if let Some(s) = Self::read_file_single(amd_pstate) {
+                if s.trim() == "active" { return (None, Some(true)); }
+                return (None, Some(false));
+            }
+            return (None, None);
+        }
+
+        (None, None)
+    }
+
+    fn read_file_opt<P: AsRef<Path>>(path: P) -> Option<String> {
+        fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+    }
+
+    pub fn get_battery_path() -> Option<PathBuf> {
+        if CONFIG.has_option("battery", "battery_device") {
+            let battery_device = CONFIG.get("battery", "battery_device", "");
+            if !battery_device.is_empty() {
+                let custom = Path::new(POWER_SUPPLY_DIR).join(&battery_device);
+                let type_path = custom.join("type");
+                if type_path.is_file() {
+                    if let Some(content) = Self::read_file_opt(type_path) {
+                        if content.to_lowercase() == "battery" {
+                            return Some(custom);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Ok(entries) = fs::read_dir(POWER_SUPPLY_DIR) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let type_path = path.join("type");
+                if type_path.is_file() {
+                    if let Some(content) = Self::read_file_opt(type_path) {
+                        if content.to_lowercase() == "battery" {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn battery_info() -> BatteryInfo {
+        let battery_path = Self::get_battery_path();
+
+        let mut is_ac_plugged = Some(true);
+
+        if battery_path.is_none() {
+            return BatteryInfo {
+                is_charging: None,
+                is_ac_plugged: Some(true),
+                charging_start_threshold: None,
+                charging_stop_threshold: None,
+                battery_level: None,
+                power_consumption: None,
+            };
+        }
+
+        if let Ok(entries) = fs::read_dir(POWER_SUPPLY_DIR) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                let t = Self::read_file_opt(p.join("type")).unwrap_or_default();
+                if t == "Mains" {
+                    let online = Self::read_file_opt(p.join("online")).unwrap_or_default();
+                    is_ac_plugged = Some(online == "1");
+                }
+            }
+        }
+
+        let bp = battery_path.unwrap();
+        let battery_status = Self::read_file_opt(bp.join("status"));
+        let battery_capacity = Self::read_file_opt(bp.join("capacity"));
+        let energy_rate = Self::read_file_opt(bp.join("power_now")).or_else(|| Self::read_file_opt(bp.join("current_now")));
+        let charge_start = Self::read_file_opt(bp.join("charge_start_threshold")).or_else(|| Self::read_file_opt(bp.join("charge_control_start_threshold")));
+        let charge_stop = Self::read_file_opt(bp.join("charge_stop_threshold")).or_else(|| Self::read_file_opt(bp.join("charge_control_end_threshold")));
+
+        let is_charging = battery_status.as_ref().map(|s| s.to_lowercase() == "charging");
+        let battery_level = battery_capacity.and_then(|c| c.parse::<u8>().ok());
+        let power_consumption = energy_rate.and_then(|e| e.parse::<f32>().ok()).map(|v| v / 1_000_000.0);
+        let charging_start_threshold = charge_start.and_then(|s| s.parse::<i32>().ok());
+        let charging_stop_threshold = charge_stop.and_then(|s| s.parse::<i32>().ok());
+
+        BatteryInfo {
+            is_charging,
+            is_ac_plugged,
+            charging_start_threshold,
+            charging_stop_threshold,
+            battery_level,
+            power_consumption,
+        }
+    }
+
+    // turbo_on_suggestion artık System parametresi alıyor
+    pub fn turbo_on_suggestion(sys: &mut System) -> bool {
+        let usage = Self::cpu_usage(sys);
+        if usage >= 20.0 { return true; }
+        if usage <= 25.0 && Self::avg_temp(sys) as f32 >= 70.0 { return false; }
+        false
+    }
+
+    pub fn governor_suggestion() -> Option<String> {
+        let batt = Self::battery_info();
+        if batt.is_ac_plugged.unwrap_or(true) {
+            AVAILABLE_GOVERNORS_SORTED.get(0).cloned()
+        } else {
+            AVAILABLE_GOVERNORS_SORTED.last().cloned()
+        }
+    }
+
+    // System nesnesini parametre olarak alıyoruz
+    pub fn generate_system_report(&self, sys: &mut System) -> SystemReport {
+        let battery = Self::battery_info();
+        let cores = Self::get_cpu_info(sys);
+
+        SystemReport {
+            distro_name: self.distro_name.clone(),
+            distro_ver: self.distro_version.clone(),
+            arch: self.architecture.clone(),
+            processor_model: self.processor_model.clone(),
+            total_core: self.total_cores,
+            kernel_version: self.kernel_version.clone(),
+            current_gov: Self::current_gov(),
+            current_epp: battery.is_ac_plugged.and_then(|ac| Self::current_epp(ac)),
+            current_epb: battery.is_ac_plugged.and_then(|ac| Self::current_epb(ac)),
+            cpu_driver: self.cpu_driver.clone(),
+            cpu_fan_speed: Self::cpu_fan_speed(),
+            cpu_usage: Self::cpu_usage(sys),
+            cpu_max_freq: Self::cpu_max_freq(),
+            cpu_min_freq: Self::cpu_min_freq(),
+            load: Self::system_load(),
+            avg_load: Self::avg_load(),
+            cores_info: cores,
+            battery_info: battery,
+            is_turbo_on: Self::turbo_on(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smoke() {
+        let s = SystemInfo::new();
+        let mut sys = System::new_all();
+        let _ = s.generate_system_report(&mut sys);
+    }
+}
+
+
+
+--- FILE: ./modules/system_monitor.rs ---
+
+// src/modules/system_monitor.rs
+use std::thread;
+use std::time::Duration;
+
+use sysinfo::System;
+
+use crate::modules::system_info::{SystemInfo, SystemReport};
+
+#[derive(Debug, Clone, Copy)]
+pub enum ViewType {
+    Stats,
+    Monitor,
+    Live,
+}
+
+impl std::fmt::Display for ViewType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ViewType::Stats => write!(f, "Stats"),
+            ViewType::Monitor => write!(f, "Monitor"),
+            ViewType::Live => write!(f, "Live"),
+        }
+    }
+}
+
+pub struct SystemMonitor {
+    pub view: ViewType,
+    pub suggestion: bool,
+    pub verbose: bool,  // Yeni: detaylı mod
+    pub left: Vec<String>,
+    pub right: Vec<String>,
+    sys: System,
+}
+
+impl SystemMonitor {
+    pub fn new(view: ViewType, suggestion: bool) -> Self {
+        Self::new_with_verbose(view, suggestion, false)
+    }
+
+    pub fn new_with_verbose(view: ViewType, suggestion: bool, verbose: bool) -> Self {
+        let mut sys = System::new_all();
+        sys.refresh_cpu();
+        
+        Self { 
+            view, 
+            suggestion,
+            verbose,
+            left: Vec::new(), 
+            right: Vec::new(),
+            sys,
+        }
+    }
+
+    pub fn update(&mut self) {
+        let sys_info = SystemInfo::new();
+        let report = sys_info.generate_system_report(&mut self.sys);
+        self.format_system_info(&report);
+    }
+
+    fn format_option<T: std::fmt::Display + std::fmt::Debug>(opt: Option<T>, verbose: bool) -> String {
+        if verbose {
+            format!("{:?}", opt)
+        } else {
+            opt.map(|v| v.to_string()).unwrap_or_else(|| "Unknown".to_string())
+        }
+    }
+
+    fn format_battery_status(is_charging: Option<bool>, is_ac_plugged: Option<bool>, verbose: bool) -> String {
+        if verbose {
+            format!("is_charging: {:?}, is_ac_plugged: {:?}", is_charging, is_ac_plugged)
+        } else {
+            match (is_charging, is_ac_plugged) {
+                (Some(true), _) => "Charging".to_string(),
+                (Some(false), Some(false)) => "Discharging".to_string(),
+                (Some(false), Some(true)) => "Charged".to_string(),
+                _ => "Unknown".to_string(),
+            }
+        }
+    }
+
+    pub fn format_system_info(&mut self, report: &SystemReport) {
+        self.left.clear();
+        self.right.clear();
+
+        // Left column - System Information
+        self.left.push("System Information".to_string());
+        self.left.push(String::new());
+        self.left.push(format!("Linux distro: {} {}", report.distro_name, report.distro_ver));
+        self.left.push(format!("Linux kernel: {}", report.kernel_version));
+        self.left.push(format!("Processor: {}", report.processor_model));
+        
+        // Verbose vs Simple format
+        if self.verbose {
+            self.left.push(format!("Cores: {:?}", report.total_core));
+            self.left.push(format!("Driver: {:?}", report.cpu_driver));
+        } else {
+            self.left.push(format!("Cores: {}", Self::format_option(report.total_core, false)));
+            self.left.push(format!("Driver: {}", report.cpu_driver.as_deref().unwrap_or("Unknown")));
+        }
+        
+        self.left.push(format!("Architecture: {}", report.arch));
+        self.left.push(String::new());
+
+        if crate::CONFIG.has_config() {
+            self.left.push(format!("Using settings defined in {}", crate::CONFIG.get_path().display()));
+            self.left.push(String::new());
+        }
+
+        // Current CPU Stats
+        self.left.push("Current CPU Stats".to_string());
+        self.left.push(String::new());
+        
+        if self.verbose {
+            self.left.push(format!("CPU max frequency: {:?} MHz", report.cpu_max_freq));
+            self.left.push(format!("CPU min frequency: {:?} MHz", report.cpu_min_freq));
+        } else {
+            self.left.push(format!("CPU max frequency: {} MHz", 
+                report.cpu_max_freq.map(|f| format!("{:.0}", f)).unwrap_or_else(|| "Unknown".to_string())));
+            self.left.push(format!("CPU min frequency: {} MHz",
+                report.cpu_min_freq.map(|f| format!("{:.0}", f)).unwrap_or_else(|| "Unknown".to_string())));
+        }
+        
+        self.left.push(String::new());
+        self.left.push("Core    Usage   Temperature     Frequency".to_string());
+
+        for core in &report.cores_info {
+            self.left.push(format!("CPU{:<2}    {:>4.1}%    {:>6.0} °C    {:>6.0} MHz", 
+                core.id, core.usage, core.temperature, core.frequency));
+        }
+
+        if let Some(fan) = report.cpu_fan_speed {
+            self.left.push(String::new());
+            self.left.push(format!("CPU fan speed: {} RPM", fan));
+        }
+
+        // Right column - Battery Stats
+        self.right.push("Battery Stats".to_string());
+        self.right.push(String::new());
+        
+        if self.verbose {
+            // Verbose mode: tüm struct detayları
+            self.right.push(format!("Battery info: {:?}", report.battery_info));
+        } else {
+            // Simple mode: kullanıcı dostu
+            let battery_status = Self::format_battery_status(
+                report.battery_info.is_charging, 
+                report.battery_info.is_ac_plugged,
+                false
+            );
+            self.right.push(format!("Battery status: {}", battery_status));
+            
+            let battery_level = report.battery_info.battery_level
+                .map(|b| format!("{}%", b))
+                .unwrap_or_else(|| "Unknown".to_string());
+            self.right.push(format!("Battery level: {}", battery_level));
+
+            let ac_status = report.battery_info.is_ac_plugged
+                .map(|ac| if ac { "Yes" } else { "No" })
+                .unwrap_or("Unknown");
+            self.right.push(format!("AC plugged: {}", ac_status));
+
+            let start_threshold = report.battery_info.charging_start_threshold
+                .map(|t| format!("{}%", t))
+                .unwrap_or_else(|| "Not set".to_string());
+            self.right.push(format!("Start threshold: {}", start_threshold));
+
+            let stop_threshold = report.battery_info.charging_stop_threshold
+                .map(|t| format!("{}%", t))
+                .unwrap_or_else(|| "Not set".to_string());
+            self.right.push(format!("Stop threshold: {}", stop_threshold));
+        }
+        
+        self.right.push(String::new());
+
+        // CPU Frequency Scaling
+        self.right.push("CPU Frequency Scaling".to_string());
+        self.right.push(String::new());
+        
+        if self.verbose {
+            self.right.push(format!("Current governor: {:?}", report.current_gov));
+            self.right.push(format!("EPP: {:?}", report.current_epp));
+            self.right.push(format!("EPB: {:?}", report.current_epb));
+        } else {
+            let current_gov = report.current_gov.as_deref().unwrap_or("Unknown");
+            self.right.push(format!("Current governor: {}", current_gov));
+
+            if let Some(epp) = &report.current_epp {
+                self.right.push(format!("EPP: {}", epp));
+            } else {
+                self.right.push("EPP: Not supported".to_string());
+            }
+
+            if let Some(epb) = &report.current_epb {
+                self.right.push(format!("EPB: {}", epb));
+            }
+        }
+
+        if self.suggestion {
+            if let Some(sugg) = SystemInfo::governor_suggestion() {
+                if report.current_gov.as_deref() != Some(&sugg) {
+                    self.right.push(format!("Suggested governor: {}", sugg));
+                }
+            }
+        }
+
+        self.right.push(String::new());
+
+        // System Statistics
+        self.right.push("System Statistics".to_string());
+        self.right.push(String::new());
+        self.right.push(format!("CPU usage: {:.1}%", report.cpu_usage));
+        self.right.push(format!("System load: {:.2}", report.load));
+
+        if !report.cores_info.is_empty() {
+            let avg_temp: f32 = report.cores_info.iter()
+                .map(|c| c.temperature)
+                .sum::<f32>() / report.cores_info.len() as f32;
+            self.right.push(format!("Average temp: {:.1} °C", avg_temp));
+        }
+
+        if let Some((a, b, c)) = report.avg_load {
+            let load_status = if report.load < 1.0 { "optimal" } else { "high" };
+            self.right.push(format!("Load {}: {:.2}, {:.2}, {:.2}", load_status, a, b, c));
+        }
+
+        // Turbo status
+        if self.verbose {
+            self.right.push(format!("Turbo boost: {:?}", report.is_turbo_on));
+        } else {
+            let turbo_status = match (report.is_turbo_on.0, report.is_turbo_on.1) {
+                (Some(on), _) => if on { "On" } else { "Off" }.to_string(),
+                (None, Some(auto)) => format!("Auto ({})", if auto { "enabled" } else { "disabled" }),
+                _ => "Unknown".to_string(),
+            };
+            self.right.push(format!("Turbo boost: {}", turbo_status));
+        }
+
+        if self.suggestion {
+            if let Some(on) = report.is_turbo_on.0 {
+                let sugg = SystemInfo::turbo_on_suggestion(&mut self.sys);
+                if sugg != on {
+                    self.right.push(format!("Suggested turbo: {}", if sugg { "On" } else { "Off" }));
+                }
+            }
+        }
+    }
+
+    /// Simple blocking run that prints the formatted columns to stdout every 2s.
+    pub fn run_blocking(&mut self) {
+        loop {
+            self.update();
+            // Clear screen
+            println!("\x1B[2J\x1B[1;1H");
+            
+            let width = 80usize;
+            let half = width / 2 - 1;
+            let rows = std::cmp::max(self.left.len(), self.right.len());
+            
+            for i in 0..rows {
+                let left = self.left.get(i).cloned().unwrap_or_default();
+                let right = self.right.get(i).cloned().unwrap_or_default();
+                
+                // Truncate if too long
+                let left_truncated = if left.len() > half {
+                    format!("{}...", &left[..half-3])
+                } else {
+                    left
+                };
+                
+                println!("{:<half$} │ {}", left_truncated, right, half=half);
+            }
+            
+            thread::sleep(Duration::from_secs(2));
+        }
+    }
+}
+
+
+
+--- FILE: ./power_helper.rs ---
+
+// src/power_helper.rs
+
+use anyhow::{Result, Context};
+use std::fs;
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use crate::globals::{GITHUB, IS_INSTALLED_WITH_SNAP};
+use crate::tlp_stat_parser::TLPStatusParser;
+
+// Check if a command exists
+pub fn does_command_exist(cmd: &str) -> bool {
+    Command::new("which")
+        .arg(cmd)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+lazy_static::lazy_static! {
+    pub static ref BLUETOOTHCTL_EXISTS: bool = does_command_exist("bluetoothctl");
+    pub static ref POWERPROFILESCTL_EXISTS: bool = does_command_exist("powerprofilesctl");
+    pub static ref SYSTEMCTL_EXISTS: bool = does_command_exist("systemctl");
+    pub static ref TLP_STAT_EXISTS: bool = does_command_exist("tlp-stat");
+    pub static ref TUNED_STAT_EXISTS: bool = does_command_exist("tuned");
+}
+
+pub fn header() {
+    println!("\n------------------------- auto-cpufreq: Power helper -------------------------\n");
+}
+
+pub fn warning() {
+    println!("\n----------------------------------- Warning -----------------------------------\n");
+}
+
+pub fn footer() {
+    println!("\n{}\n", "-".repeat(79));
+}
+
+// Detect if GNOME Power Profile service is running
+pub fn gnome_power_status() -> Result<bool> {
+    if *IS_INSTALLED_WITH_SNAP {
+        return Ok(false);
+    }
+
+    if !*SYSTEMCTL_EXISTS {
+        return Ok(false);
+    }
+
+    let status = Command::new("systemctl")
+        .args(&["is-active", "--quiet", "power-profiles-daemon"]) 
+        .status()
+        .context("Failed to check GNOME power profiles daemon status")?;
+
+    Ok(status.success())
+}
+
+// Alert in case TLP service is running
+pub fn tlp_service_detect() -> Result<()> {
+    if !*TLP_STAT_EXISTS {
+        return Ok(());
+    }
+
+    let output = Command::new("tlp-stat")
+        .arg("-s")
+        .output()
+        .context("Failed to run tlp-stat")?;
+
+    let status_output = String::from_utf8_lossy(&output.stdout);
+    let tlp_status = TLPStatusParser::new(&status_output);
+
+    if tlp_status.is_enabled() {
+        warning();
+        println!("Detected you are running a TLP service!");
+        println!("This daemon might interfere with auto-cpufreq which can lead to unexpected results.");
+        println!("We strongly encourage you to remove TLP unless you really know what you are doing.");
+    }
+
+    Ok(())
+}
+
+// Alert about TLP when using snap
+pub fn tlp_service_detect_snap() {
+    warning();
+    println!("Unable to detect if you are using a TLP service!");
+    println!("This daemon might interfere with auto-cpufreq which can lead to unexpected results.");
+    println!("We strongly encourage you not to use TLP unless you really know what you are doing.");
+}
+
+// Alert in case GNOME power profile service is running
+pub fn gnome_power_detect() -> Result<()> {
+    if !*SYSTEMCTL_EXISTS {
+        return Ok(());
+    }
+
+    if gnome_power_status()? {
+        warning();
+        println!("Detected running GNOME Power Profiles daemon service!");
+        println!("\nThis daemon might interfere with auto-cpufreq and will be automatically");
+        println!("disabled when auto-cpufreq daemon is installed and");
+        println!("it will be re-enabled after auto-cpufreq is removed.");
+        println!("\nOnly necessary to be manually done on Snap package installs!");
+        println!("Steps to perform this action using auto-cpufreq: power_helper script:");
+        println!("git clone {}.git", GITHUB);
+        println!("python3 -m auto_cpufreq.power_helper --gnome_power_disable");
+        println!("\nReference: {}#configuring-auto-cpufreq", GITHUB);
+    }
+
+    Ok(())
+}
+
+// Automatically disable GNOME power profile service during install
+pub fn gnome_power_detect_install() -> Result<()> {
+    if !*SYSTEMCTL_EXISTS {
+        return Ok(());
+    }
+
+    if gnome_power_status()? {
+        warning();
+        println!("Detected running GNOME Power Profiles daemon service!");
+        println!("\nThis daemon might interfere with auto-cpufreq and has been disabled.\n");
+        println!("This daemon is not automatically disabled in \"monitor\" mode and");
+        println!("will be enabled after auto-cpufreq daemon is removed.");
+    }
+
+    Ok(())
+}
+
+// Alert about snap
+pub fn gnome_power_detect_snap() {
+    warning();
+    println!("Due to Snap package confinement limitations please consider installing auto-cpufreq using");
+    println!("auto-cpufreq-installer: {}#auto-cpufreq-installer", GITHUB);
+    println!();
+    println!("Unable to detect state of GNOME Power Profiles daemon service!");
+    println!("This daemon might interfere with auto-cpufreq and should be disabled!");
+    println!("\nSteps to perform this action using auto-cpufreq: power_helper script:");
+    println!("git clone {}.git", GITHUB);
+    println!("python3 -m auto_cpufreq.power_helper --gnome_power_disable");
+    println!("\nReference: {}#configuring-auto-cpufreq", GITHUB);
+}
+
+// Stop GNOME >= 40 power profiles (live)
+pub fn gnome_power_stop_live() -> Result<()> {
+    if !*SYSTEMCTL_EXISTS {
+        return Ok(());
+    }
+
+    if gnome_power_status()? && *POWERPROFILESCTL_EXISTS {
+        Command::new("powerprofilesctl")
+            .args(&["set", "balanced"]) 
+            .status()?;
+        
+        Command::new("systemctl")
+            .args(&["stop", "power-profiles-daemon"]) 
+            .status()?;
+    }
+
+    Ok(())
+}
+
+// Stop tuned (live)
+pub fn tuned_stop_live() -> Result<()> {
+    if *SYSTEMCTL_EXISTS && *TUNED_STAT_EXISTS {
+        Command::new("systemctl")
+            .args(&["stop", "tuned"]) 
+            .status()?;
+    }
+
+    Ok(())
+}
+
+// Start GNOME >= 40 power profiles (live)
+pub fn gnome_power_start_live() -> Result<()> {
+    if *SYSTEMCTL_EXISTS {
+        Command::new("systemctl")
+            .args(&["start", "power-profiles-daemon"]) 
+            .status()?;
+    }
+
+    Ok(())
+}
+
+// Start tuned (live)
+pub fn tuned_start_live() -> Result<()> {
+    if *SYSTEMCTL_EXISTS && *TUNED_STAT_EXISTS {
+        Command::new("systemctl")
+            .args(&["start", "tuned"]) 
+            .status()?;
+    }
+
+    Ok(())
+}
+
+// Enable GNOME >= 40 power profiles (uninstall)
+pub fn gnome_power_svc_enable() -> Result<()> {
+    if !*SYSTEMCTL_EXISTS {
+        return Ok(());
+    }
+
+    println!("* Enabling GNOME power profiles\n");
+    
+    Command::new("systemctl")
+        .args(&["unmask", "power-profiles-daemon"]) 
+        .status()
+        .context("Failed to unmask power-profiles-daemon")?;
+    
+    Command::new("systemctl")
+        .args(&["enable", "--now", "power-profiles-daemon"]) 
+        .status()
+        .context("Failed to enable power-profiles-daemon")?;
+
+    Ok(())
+}
+
+// Enable TuneD
+pub fn tuned_svc_enable() -> Result<()> {
+    if !*SYSTEMCTL_EXISTS || !*TUNED_STAT_EXISTS {
+        return Ok(());
+    }
+
+    println!("* Enabling TuneD\n");
+    
+    Command::new("systemctl")
+        .args(&["unmask", "tuned"]) 
+        .status()
+        .context("Failed to unmask tuned")?;
+    
+    Command::new("systemctl")
+        .args(&["enable", "--now", "tuned"]) 
+        .status()
+        .context("Failed to enable tuned")?;
+
+    Ok(())
+}
+
+// GNOME power profiles current status
+pub fn gnome_power_svc_status() -> Result<()> {
+    if !*SYSTEMCTL_EXISTS {
+        return Ok(());
+    }
+
+    println!("* GNOME power profiles status");
+    Command::new("systemctl")
+        .args(&["status", "power-profiles-daemon"]) 
+        .status()
+        .context("Failed to get GNOME power profiles status")?;
+
+    Ok(())
+}
+
+// Set AutoEnable in /etc/bluetooth/main.conf
+pub fn set_bluetooth_auto_enable(value: bool) -> Result<bool> {
+    let btconf = Path::new("/etc/bluetooth/main.conf");
+    let setting = format!("AutoEnable={}", if value { "true" } else { "false" });
+
+    let content = fs::read_to_string(btconf)
+        .context("Failed to read bluetooth config")?;
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut new_lines = Vec::new();
+    let mut in_policy_section = false;
+    let mut found_and_set = false;
+
+    for line in lines {
+        let stripped = line.trim();
+
+        if stripped.starts_with('[') {
+            if in_policy_section && !found_and_set {
+                new_lines.push(setting.clone());
+                found_and_set = true;
+            }
+            in_policy_section = stripped.to_lowercase() == "[policy]";
+            new_lines.push(line.to_string());
+            continue;
+        }
+
+        if in_policy_section {
+            if !stripped.starts_with('#') && stripped.starts_with("AutoEnable=") {
+                new_lines.push(setting.clone());
+                found_and_set = true;
+                continue;
+            }
+            if stripped.starts_with('#') {
+                let uncommented = stripped.trim_start_matches('#').trim();
+                if uncommented.starts_with("AutoEnable=") {
+                    new_lines.push(setting.clone());
+                    found_and_set = true;
+                    continue;
+                }
+            }
+        }
+
+        new_lines.push(line.to_string());
+    }
+
+    if in_policy_section && !found_and_set {
+        new_lines.push(setting.clone());
+        found_and_set = true;
+    }
+
+    if !found_and_set {
+        new_lines.push(String::new());
+        new_lines.push("[Policy]".to_string());
+        new_lines.push(setting);
+    }
+
+    fs::write(btconf, new_lines.join("\n"))
+        .context("Failed to write bluetooth config")?;
+
+    Ok(true)
+}
+
+// Disable bluetooth on boot
+pub fn bluetooth_disable() -> Result<()> {
+    if *IS_INSTALLED_WITH_SNAP {
+        bluetooth_notif_snap();
+        return Ok(());
+    }
+
+    if !*BLUETOOTHCTL_EXISTS {
+        println!("* Turn off bluetooth on boot [skipping] (package providing bluetooth access is not present)");
+        return Ok(());
+    }
+
+    println!("* Turn off Bluetooth on boot (only)!");
+    println!("  If you want bluetooth enabled on boot run: auto-cpufreq --bluetooth_boot_on");
+    
+    if !set_bluetooth_auto_enable(false)? {
+        println!("\nERROR:\nWas unable to turn off bluetooth on boot");
+    }
+
+    Ok(())
+}
+
+// Enable bluetooth on boot
+pub fn bluetooth_enable() -> Result<()> {
+    if *IS_INSTALLED_WITH_SNAP {
+        bluetooth_on_notif_snap();
+        return Ok(());
+    }
+
+    if !*BLUETOOTHCTL_EXISTS {
+        println!("* Turn on bluetooth on boot [skipping] (package providing bluetooth access is not present)");
+        return Ok(());
+    }
+
+    println!("* Turn on bluetooth on boot");
+    
+    if !set_bluetooth_auto_enable(true)? {
+        println!("\nERROR:\nWas unable to turn on bluetooth on boot");
+    }
+
+    Ok(())
+}
+
+// Turn off bluetooth on snap message
+pub fn bluetooth_notif_snap() {
+    println!("\n* Unable to turn off bluetooth on boot due to Snap package restrictions!");
+    println!("\nSteps to perform this action using auto-cpufreq: power_helper script:");
+    println!("python3 -m auto_cpufreq.power_helper --bluetooth_boot_off");
+    println!("\nFor help see: https://github.com/AdnanHodzic/auto-cpufreq/#1-power_helperpy-script-snap-package-install-only");
+}
+
+// Turn on bluetooth on snap message
+pub fn bluetooth_on_notif_snap() {
+    println!("\n* Unable to turn on bluetooth on boot due to Snap package restrictions!");
+    println!("\nSteps to perform this action using auto-cpufreq: power_helper script:");
+    println!("python3 -m auto_cpufreq.power_helper --bluetooth_boot_on");
+    println!("\nFor help see: https://github.com/AdnanHodzic/auto-cpufreq/#1-power_helperpy-script-snap-package-install-only");
+}
+
+// GNOME power removal reminder
+pub fn gnome_power_rm_reminder() -> Result<()> {
+    if !*SYSTEMCTL_EXISTS {
+        return Ok(());
+    }
+
+    if !gnome_power_status()? {
+        warning();
+        println!("Detected GNOME Power Profiles daemon service is stopped!");
+        println!("This service will now be enabled and started again.\n");
+    }
+
+    Ok(())
+}
+
+// GNOME power removal reminder for snap
+pub fn gnome_power_rm_reminder_snap() {
+    warning();
+    println!("Unable to detect state of GNOME Power Profiles daemon service!");
+    println!("Now it's recommended to enable this service.");
+    println!("\nSteps to perform this action using auto-cpufreq: power_helper script:");
+    println!("git clone {}.git", GITHUB);
+    println!("python3 -m auto_cpufreq.power_helper --gnome_power_enable");
+    println!("\nReference: {}#configuring-auto-cpufreq", GITHUB);
+}
+
+
+
+--- FILE: ./tlp_stat_parser.rs ---
+
+// src/tlp_stat_parser.rs
+
+use std::collections::HashMap;
+
+pub struct TLPStatusParser {
+    data: HashMap<String, String>,
+}
+
+impl TLPStatusParser {
+    pub fn new(tlp_stat_output: &str) -> Self {
+        let mut parser = Self {
+            data: HashMap::new(),
+        };
+        parser.parse(tlp_stat_output);
+        parser
+    }
+
+    fn parse(&mut self, data: &str) {
+        for line in data.lines() {
+            if let Some((key, val)) = line.split_once('=') {
+                self.data.insert(
+                    key.trim().to_lowercase(),
+                    val.trim().to_string(),
+                );
+            }
+        }
+    }
+
+    fn get_key(&self, key: &str) -> String {
+        self.data.get(key).cloned().unwrap_or_default()
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.get_key("state") == "enabled"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tlp_parser() {
+        let output = "state=enabled\nversion=1.3.1\nmode=battery";
+        let parser = TLPStatusParser::new(output);
+        
+        assert!(parser.is_enabled());
+        assert_eq!(parser.get_key("version"), "1.3.1");
+        assert_eq!(parser.get_key("mode"), "battery");
+    }
+
+    #[test]
+    fn test_tlp_parser_disabled() {
+        let output = "state=disabled";
+        let parser = TLPStatusParser::new(output);
+        
+        assert!(!parser.is_enabled());
+    }
+
+    #[test]
+    fn test_tlp_parser_empty() {
+        let parser = TLPStatusParser::new("");
+        assert!(!parser.is_enabled());
+    }
+}
+
+

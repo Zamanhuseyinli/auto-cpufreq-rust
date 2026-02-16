@@ -4,15 +4,19 @@ use std::io::{Write, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use sysinfo::System;
+use crate::power_helper::SYSTEMCTL_EXISTS;
 use chrono::Local;
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, Context};
+
+use crate::config::CONFIG;
+use crate::globals::AVAILABLE_GOVERNORS_SORTED;
 
 // ============================================================================
 // Constants
 // ============================================================================
 const SCRIPTS_DIR: &str = "/usr/local/share/auto-cpufreq/scripts/";
 const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply/";
-const GITHUB: &str = "https://github.com/AdnanHodzic/auto-cpufreq";
+pub const GITHUB: &str = "https://github.com/Zamanhuseyinli/auto-cpufreq";
 
 pub const ALL_GOVERNORS: &[&str] = &[
     "performance", 
@@ -50,28 +54,18 @@ pub struct AutoCpuFreqState {
     pub stats_file_path: PathBuf,
     pub governor_override_path: PathBuf,
     pub turbo_override_path: PathBuf,
-    pub is_snap: bool,
     pub is_aur: bool,
 }
 
 impl AutoCpuFreqState {
     pub fn new() -> Self {
         let cpu_count = num_cpus::get();
-        let is_snap = std::env::var("PKG_MARKER").unwrap_or_default() == "SNAP";
         
-        let (stats_path, gov_path, turbo_path) = if is_snap {
-            (
-                PathBuf::from("/var/snap/auto-cpufreq/current/auto-cpufreq.stats"),
-                PathBuf::from("/var/snap/auto-cpufreq/current/override.pickle"),
-                PathBuf::from("/var/snap/auto-cpufreq/current/turbo-override.pickle"),
-            )
-        } else {
-            (
+        let (stats_path, gov_path, turbo_path) = (
                 PathBuf::from("/var/run/auto-cpufreq.stats"),
                 PathBuf::from("/opt/auto-cpufreq/override.pickle"),
                 PathBuf::from("/opt/auto-cpufreq/turbo-override.pickle"),
-            )
-        };
+        );
 
         Self {
             cpu_count,
@@ -80,7 +74,6 @@ impl AutoCpuFreqState {
             stats_file_path: stats_path,
             governor_override_path: gov_path,
             turbo_override_path: turbo_path,
-            is_snap,
             is_aur: Self::check_aur_install(),
         }
     }
@@ -101,9 +94,7 @@ impl AutoCpuFreqState {
 pub fn get_version() -> Result<String> {
     let state = AutoCpuFreqState::new();
     
-    if state.is_snap {
-        Ok(format!("(Snap) {}", std::env::var("SNAP_VERSION")?))
-    } else if state.is_aur {
+       if state.is_aur {
         let output = Command::new("pacman")
             .args(&["-Qi", "auto-cpufreq"])
             .output()?;
@@ -379,8 +370,9 @@ fn read_cpu_temperature(core_id: usize) -> f32 {
                     // For coretemp: temp1 = Package, temp2+ = cores
                     // Try temp{core_id + 2}_input first, then iterate
                     let preferred_temp_id = core_id + 2;
+                    let max_temp_id = std::cmp::min(core_id + 10, 20);
                     
-                    for temp_id in preferred_temp_id..20 {
+                    for temp_id in preferred_temp_id..max_temp_id {
                         let temp_file = path.join(format!("temp{}_input", temp_id));
                         
                         if temp_file.exists() {
@@ -389,6 +381,14 @@ fn read_cpu_temperature(core_id: usize) -> f32 {
                                     return temp_millidegrees / 1000.0;
                                 }
                             }
+                        }
+                    }
+                    
+                    // Fallback: use package temp for all cores
+                    let temp_input = path.join("temp1_input");
+                    if let Ok(temp_str) = fs::read_to_string(&temp_input) {
+                        if let Ok(temp) = temp_str.trim().parse::<f32>() {
+                            return temp / 1000.0;
                         }
                     }
                 }
@@ -453,15 +453,19 @@ pub fn sysinfo() -> Result<()> {
         .to_string();
     println!("Driver: {}", driver);
     
+    // FIXED: Get CPU info properly with refresh
     let mut sys = System::new_all();
+    sys.refresh_cpu();
+    std::thread::sleep(std::time::Duration::from_millis(200));
     sys.refresh_cpu();
     
     if let Some(cpu) = sys.cpus().first() {
         println!("\n{}", "-".repeat(30) + " Current CPU stats " + &"-".repeat(30));
-        println!("\nCPU max frequency: {} MHz", cpu.frequency());
+        println!("\nCPU max frequency: {:.0} MHz", cpu.frequency());
     }
     
-    println!("\nCore\tUsage\tTemperature\tFrequency");
+    // FIXED: Better column alignment for frequency display
+    println!("\n{:<6} {:<8} {:<16} {:<10}", "Core", "Usage", "Temperature", "Frequency");
     
     for (i, cpu) in sys.cpus().iter().enumerate() {
         let temp = read_cpu_temperature(i);
@@ -471,8 +475,9 @@ pub fn sysinfo() -> Result<()> {
             "-- °C".to_string()
         };
         
-        println!("CPU{}\t{:.1}%\t{}\t{} MHz", 
-            i, 
+        // FIXED: Proper column formatting
+        println!("{:<6} {:<8.1}% {:<16} {:.0} MHz", 
+            format!("CPU{}", i),
             cpu.cpu_usage(),
             temp_str,
             cpu.frequency()
@@ -577,10 +582,9 @@ pub fn print_current_gov() {
 // cpufreqctl deployment
 // ============================================================================
 pub fn cpufreqctl() -> Result<()> {
-    let state = AutoCpuFreqState::new();
     let target = "/usr/local/bin/cpufreqctl.auto-cpufreq";
     
-    if !state.is_snap && !Path::new(target).exists() {
+      if  !Path::new(target).exists() {
         let source = PathBuf::from(SCRIPTS_DIR).join("cpufreqctl.sh");
         fs::copy(source, target)?;
         
@@ -593,10 +597,9 @@ pub fn cpufreqctl() -> Result<()> {
 }
 
 pub fn cpufreqctl_restore() -> Result<()> {
-    let state = AutoCpuFreqState::new();
     let target = "/usr/local/bin/cpufreqctl.auto-cpufreq";
     
-    if !state.is_snap && Path::new(target).exists() {
+    if Path::new(target).exists() {
         fs::remove_file(target)?;
     }
     
@@ -630,10 +633,75 @@ fn remove_cpufreqctl() -> Result<()> {
 }
 
 // ============================================================================
+// MERGED: Stats file update function from version 2
+// ============================================================================
+
+/// Write current stats to stats file (called by daemon every cycle)
+pub fn update_stats_file() -> Result<()> {
+    let state = AutoCpuFreqState::new();
+    
+    // Ensure directory exists
+    if let Some(parent) = state.stats_file_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    
+    // Generate stats content
+    let mut stats = String::new();
+    
+    use std::fmt::Write as FmtWrite;
+    
+    // Timestamp
+    let _ = writeln!(&mut stats, "\n{}", "=".repeat(80));
+    let _ = writeln!(&mut stats, "auto-cpufreq daemon - {}", 
+        Local::now().format("%Y-%m-%d %H:%M:%S"));
+    let _ = writeln!(&mut stats, "{}\n", "=".repeat(80));
+    
+    // Quick stats
+    let mut sys = System::new_all();
+    sys.refresh_cpu();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sys.refresh_cpu();
+    
+    let cpu_usage: f32 = sys.cpus().iter()
+        .map(|c| c.cpu_usage())
+        .sum::<f32>() / sys.cpus().len() as f32;
+    
+    let loadavg = System::load_average();
+    
+    let _ = writeln!(&mut stats, "CPU usage: {:.1}%", cpu_usage);
+    let _ = writeln!(&mut stats, "Load: {:.2}, {:.2}, {:.2}", 
+        loadavg.one, loadavg.five, loadavg.fifteen);
+    
+    if let Ok(gov) = get_current_gov() {
+        let _ = writeln!(&mut stats, "Governor: {}", gov);
+    }
+    
+    if let Ok(turbo_state) = turbo(None) {
+        let _ = writeln!(&mut stats, "Turbo: {}", if turbo_state { "On" } else { "Off" });
+    }
+    
+    if let Ok(is_charging) = charging() {
+        let _ = writeln!(&mut stats, "Battery: {}", 
+            if is_charging { "Charging" } else { "Discharging" });
+    }
+    
+    let _ = writeln!(&mut stats, "\n{}", "-".repeat(80));
+    
+    // Write to file
+    fs::write(&state.stats_file_path, stats)?;
+    
+    Ok(())
+}
+
+// ============================================================================
 // Load information
 // ============================================================================
 pub fn get_load() -> (f64, f64) {
     let mut sys = System::new_all();
+    
+    // FIXED: Proper CPU refresh sequence
+    sys.refresh_cpu();
+    std::thread::sleep(std::time::Duration::from_millis(200));
     sys.refresh_cpu();
     
     let cpu_usage: f64 = sys.cpus().iter()
@@ -705,16 +773,86 @@ pub fn countdown(seconds: u64) {
 }
 
 // ============================================================================
-// Daemon management
+// MERGED: Improved daemon detection from version 2
 // ============================================================================
+
 pub fn is_running(program: &str, argument: &str) -> bool {
-    let mut sys = System::new_all();
+    
+    
+    check_proc_daemon_status(program, argument)
+}
+
+fn check_proc_daemon_status(program: &str, argument: &str) -> bool {
+    let proc_path = Path::new("/proc");
+    
+    if !proc_path.exists() {
+        // Fallback to sysinfo if /proc not available
+        return is_running_sysinfo(program, argument);
+    }
+    
+    let entries = match fs::read_dir(proc_path) {
+        Ok(e) => e,
+        Err(_) => return is_running_sysinfo(program, argument),
+    };
+    
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy();
+        
+        // Only check numeric directories (PIDs)
+        if !file_name_str.chars().all(|c| c.is_numeric()) {
+            continue;
+        }
+        
+        // Read cmdline
+        let cmdline_path = path.join("cmdline");
+        if let Ok(cmdline_bytes) = fs::read(&cmdline_path) {
+            // /proc/PID/cmdline uses null bytes as separators
+            let cmdline_str = String::from_utf8_lossy(&cmdline_bytes);
+            let args: Vec<&str> = cmdline_str.split('\0').filter(|s| !s.is_empty()).collect();
+            
+            if args.is_empty() {
+                continue;
+            }
+            
+            // Check if program name matches
+            let has_program = args.iter().any(|arg| arg.contains(program));
+            
+            if has_program {
+                // Check if argument matches
+                let has_argument = args.iter().any(|arg| arg.contains(argument));
+                
+                if has_argument {
+                    return true;
+                }
+            }
+        }
+    }
+    
+    false
+}
+
+// Fallback to sysinfo (though it doesn't work well)
+fn is_running_sysinfo(program: &str, argument: &str) -> bool {
+    let mut sys = System::new();
     sys.refresh_processes();
     
     for (_, process) in sys.processes() {
+        let exe_path = process.exe()
+            .and_then(|p| p.to_str())
+            .unwrap_or("");
         let cmd = process.cmd();
-        if cmd.iter().any(|s| s.contains(program)) && 
-           cmd.iter().any(|s| s.contains(argument)) {
+        let name = process.name();
+        
+        let has_program = 
+            name.contains(program) ||
+            exe_path.contains(program) ||
+            cmd.iter().any(|s| s.contains(program));
+        
+        let has_argument = cmd.iter().any(|s| s.contains(argument));
+        
+        if has_program && has_argument {
             return true;
         }
     }
@@ -723,61 +861,47 @@ pub fn is_running(program: &str, argument: &str) -> bool {
 }
 
 pub fn daemon_running_check() -> Result<()> {
-    let state = AutoCpuFreqState::new();
-    
     if is_running("auto-cpufreq", "--daemon") {
         println!("\n{}\n", "-".repeat(24) + " auto-cpufreq running " + &"-".repeat(30));
         println!("ERROR: auto-cpufreq is running in daemon mode.");
         println!("\nMake sure to stop the daemon before running with --live or --monitor mode");
         footer(79);
         bail!("Daemon already running");
-    } else if state.is_snap {
-        let output = Command::new("snapctl")
-            .args(&["get", "daemon"]) 
-            .output();
-        
-        if let Ok(out) = output {
-            let status = String::from_utf8_lossy(&out.stdout);
-            if status.trim() == "enabled" {
-                println!("\n{}\n", "-".repeat(24) + " auto-cpufreq running " + &"-".repeat(30));
-                println!("ERROR: auto-cpufreq is running in daemon mode.");
-                footer(79);
-                bail!("Daemon already running");
-            }
-        }
     }
-    
+
     Ok(())
 }
-
+// MERGED: Enhanced version with systemctl fallback check
 pub fn not_running_daemon_check() -> Result<()> {
-    let state = AutoCpuFreqState::new();
-    
+    // Check if daemon process is running
     if !is_running("auto-cpufreq", "--daemon") {
+        // Additional check: maybe it's running but we can't detect it via process list
+        // Check if systemd service is active
+        if *SYSTEMCTL_EXISTS {
+            let status = Command::new("systemctl")
+                .args(&["is-active", "auto-cpufreq"])
+                .output();
+
+            if let Ok(out) = status {
+                let active = String::from_utf8_lossy(&out.stdout);
+                if active.trim() == "active" {
+                    // Service is active but we couldn't find the process
+                    // This might be a timing issue, assume it's running
+                    eprintln!("DEBUG: systemctl says service is active");
+                    return Ok(());
+                }
+            }
+        }
+
         println!("\n{}\n", "-".repeat(24) + " auto-cpufreq not running " + &"-".repeat(30));
         println!("ERROR: auto-cpufreq is not running in daemon mode.");
         println!("\nMake sure to run \"sudo auto-cpufreq --install\" first");
         footer(79);
         bail!("Daemon not running");
-    } else if state.is_snap {
-        let output = Command::new("snapctl")
-            .args(&["get", "daemon"]) 
-            .output();
-        
-        if let Ok(out) = output {
-            let status = String::from_utf8_lossy(&out.stdout);
-            if status.trim() == "disabled" {
-                println!("\n{}\n", "-".repeat(24) + " auto-cpufreq not running " + &"-".repeat(30));
-                println!("ERROR: auto-cpufreq is not running in daemon mode.");
-                footer(79);
-                bail!("Daemon not running");
-            }
-        }
     }
-    
+
     Ok(())
 }
-
 // ============================================================================
 // Install/Remove script runners
 // ============================================================================
@@ -1207,6 +1331,199 @@ fn remove_s6() -> Result<()> {
     println!("\n* Update daemon service bundle (s6)");
     Command::new("s6-db-reload")
         .status()?;
+    
+    Ok(())
+}
+// ============================================================================
+// Automatic frequency adjustment - Main daemon logic
+// ============================================================================
+
+/// Get appropriate governor based on system state
+fn get_appropriate_governor(is_charging: bool, cpu_usage: f32, load: f32) -> &'static str {
+    let state = AutoCpuFreqState::new();
+    let override_val = get_override(&state);
+    
+    // Check override first
+    match override_val {
+        GovernorOverride::Performance => return "performance",
+        GovernorOverride::Powersave => return "powersave",
+        GovernorOverride::Default => {}, // Continue to auto logic
+    }
+    
+    // Check config file for specific governor
+    if CONFIG.has_option("charger", "governor") && is_charging {
+        let gov = CONFIG.get("charger", "governor", "");
+        if !gov.is_empty() && AVAILABLE_GOVERNORS_SORTED.iter().any(|g| g == &gov) {
+            // Return reference from AVAILABLE_GOVERNORS_SORTED to avoid memory leak
+            if let Some(g) = AVAILABLE_GOVERNORS_SORTED.iter().find(|&x| x == &gov) {
+                return g.as_str();
+            }
+        }
+    }
+    
+    if CONFIG.has_option("battery", "governor") && !is_charging {
+        let gov = CONFIG.get("battery", "governor", "");
+        if !gov.is_empty() && AVAILABLE_GOVERNORS_SORTED.iter().any(|g| g == &gov) {
+            if let Some(g) = AVAILABLE_GOVERNORS_SORTED.iter().find(|&x| x == &gov) {
+                return g.as_str();
+            }
+        }
+    }
+    
+    // Auto selection based on state
+    if is_charging {
+        // AC plugged - performance oriented
+        if cpu_usage > 50.0 || load > state.performance_load_threshold {
+            if AVAILABLE_GOVERNORS_SORTED.contains(&"performance".to_string()) {
+                return "performance";
+            }
+        }
+        // Moderate load
+        if AVAILABLE_GOVERNORS_SORTED.contains(&"schedutil".to_string()) {
+            return "schedutil";
+        } else if AVAILABLE_GOVERNORS_SORTED.contains(&"ondemand".to_string()) {
+            return "ondemand";
+        }
+    } else {
+        // Battery - power saving oriented
+        if cpu_usage < 25.0 && load < state.powersave_load_threshold {
+            if AVAILABLE_GOVERNORS_SORTED.contains(&"powersave".to_string()) {
+                return "powersave";
+            }
+        }
+        // Moderate battery usage
+        if AVAILABLE_GOVERNORS_SORTED.contains(&"schedutil".to_string()) {
+            return "schedutil";
+        }
+    }
+    
+    // Fallback to first available governor
+    AVAILABLE_GOVERNORS_SORTED.first()
+        .map(|s| s.as_str())
+        .unwrap_or("schedutil")
+}
+
+/// Set CPU governor
+fn set_governor(governor: &str) -> Result<()> {
+    println!("Setting governor: {}", governor);
+    
+    let status = Command::new("cpufreqctl.auto-cpufreq")
+        .arg("--governor")
+        .arg("--set")
+        .arg(governor)
+        .status()
+        .context("Failed to set governor")?;
+    
+    if !status.success() {
+        bail!("Governor change failed");
+    }
+    
+    Ok(())
+}
+
+/// Set turbo based on system usage
+fn set_turbo_based_on_usage(cpu_usage: f32, is_charging: bool) -> Result<()> {
+    let state = AutoCpuFreqState::new();
+    let turbo_override = get_turbo_override(&state);
+    
+    // Check override
+    match turbo_override {
+        TurboOverride::Always => {
+            set_turbo(true);
+            return Ok(());
+        }
+        TurboOverride::Never => {
+            set_turbo(false);
+            return Ok(());
+        }
+        TurboOverride::Auto => {}, // Continue to auto logic
+    }
+    
+    // Check config
+    if CONFIG.has_option("charger", "turbo") && is_charging {
+        let turbo_conf = CONFIG.get("charger", "turbo", "auto");
+        match turbo_conf.as_str() {
+            "always" => { set_turbo(true); return Ok(()); }
+            "never" => { set_turbo(false); return Ok(()); }
+            _ => {}
+        }
+    }
+    
+    if CONFIG.has_option("battery", "turbo") && !is_charging {
+        let turbo_conf = CONFIG.get("battery", "turbo", "auto");
+        match turbo_conf.as_str() {
+            "always" => { set_turbo(true); return Ok(()); }
+            "never" => { set_turbo(false); return Ok(()); }
+            _ => {}
+        }
+    }
+    
+    // Auto decision
+    let mut sys = System::new_all();
+    sys.refresh_cpu();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sys.refresh_cpu();
+    
+    let cores = (0..sys.cpus().len())
+        .map(|i| {
+            let temp = read_cpu_temperature(i);
+            temp
+        })
+        .filter(|&t| t > 0.0)
+        .collect::<Vec<_>>();
+    
+    let avg_temp = if !cores.is_empty() {
+        cores.iter().sum::<f32>() / cores.len() as f32
+    } else {
+        0.0
+    };
+    
+    if is_charging {
+        // AC: enable turbo if high load or moderate temp
+        if cpu_usage > 25.0 && avg_temp < 75.0 {
+            set_turbo(true);
+        } else if avg_temp >= 75.0 {
+            set_turbo(false);
+        }
+    } else {
+        // Battery: disable turbo to save power unless heavy load
+        if cpu_usage > 75.0 {
+            set_turbo(true);
+        } else {
+            set_turbo(false);
+        }
+    }
+    
+    Ok(())
+}
+
+/// Main automatic frequency adjustment function
+/// Called by daemon every cycle
+pub fn set_autofreq() -> Result<()> {
+    let is_charging = charging()?;
+    
+    // Get system metrics
+    let mut sys = System::new_all();
+    sys.refresh_cpu();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sys.refresh_cpu();
+    
+    let cpu_usage: f32 = sys.cpus().iter()
+        .map(|c| c.cpu_usage())
+        .sum::<f32>() / sys.cpus().len() as f32;
+    
+    let load = System::load_average().one as f32;
+    
+    // Get and set appropriate governor
+    let target_governor = get_appropriate_governor(is_charging, cpu_usage, load);
+    let current_governor = get_current_gov().unwrap_or_else(|_| "unknown".to_string());
+    
+    if target_governor != current_governor {
+        set_governor(target_governor)?;
+    }
+    
+    // Set turbo
+    set_turbo_based_on_usage(cpu_usage, is_charging)?;
     
     Ok(())
 }

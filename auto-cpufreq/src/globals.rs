@@ -1,6 +1,5 @@
 // src/globals.rs
 
-use std::env;
 use std::path::Path;
 use std::process::Command;
 
@@ -29,13 +28,8 @@ pub const CPU_TEMP_SENSOR_PRIORITY: &[&str] = &[
 
 lazy_static::lazy_static! {
     pub static ref IS_INSTALLED_WITH_AUR: bool = check_aur_install();
-    pub static ref IS_INSTALLED_WITH_SNAP: bool = check_snap_install();
     pub static ref AVAILABLE_GOVERNORS: Vec<String> = get_available_governors();
     pub static ref AVAILABLE_GOVERNORS_SORTED: Vec<String> = sort_governors(&AVAILABLE_GOVERNORS);
-}
-
-fn check_snap_install() -> bool {
-    env::var("PKG_MARKER").map(|v| v == "SNAP").unwrap_or(false)
 }
 
 fn check_aur_install() -> bool {

@@ -1,14 +1,9 @@
 use ksni::{Tray, TrayService, MenuItem, ToolTip};
 use ksni::menu::StandardItem;
 use std::process::Command;
-use crate::globals::IS_INSTALLED_WITH_SNAP;
 
 fn get_icon_path() -> String {
-    if *IS_INSTALLED_WITH_SNAP {
-        "/snap/auto-cpufreq/current/icon.png".to_string()
-    } else {
-        "/usr/local/share/auto-cpufreq/images/icon.png".to_string()
-    }
+    "/usr/local/share/auto-cpufreq/images/icon.png".to_string()
 }
 
 pub struct AutoCpufreqTray;

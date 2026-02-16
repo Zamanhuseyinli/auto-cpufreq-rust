@@ -10,11 +10,10 @@ use gtk::{
 use gdk::Display;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::process::Command;
 use glib;
 use sysinfo::System; 
-
 use crate::core::*;
-use crate::globals::*;
 use crate::power_helper::BLUETOOTHCTL_EXISTS;
 use crate::modules::system_info::{SystemInfo, SystemReport};
 use super::objects::*;
@@ -22,19 +21,11 @@ use super::objects::*;
 const HBOX_PADDING: i32 = 20;
 
 fn css_file() -> &'static str {
-    if *IS_INSTALLED_WITH_SNAP {
-        "/snap/auto-cpufreq/current/style.css"
-    } else {
-        "/usr/local/share/auto-cpufreq/scripts/style.css"
-    }
+    "/usr/local/share/auto-cpufreq/scripts/style.css"
 }
 
 fn icon_file() -> &'static str {
-    if *IS_INSTALLED_WITH_SNAP {
-        "/snap/auto-cpufreq/current/icon.png"
-    } else {
-        "/usr/local/share/auto-cpufreq/images/icon.png"
-    }
+    "/usr/local/share/auto-cpufreq/images/icon.png"
 }
 
 pub struct ToolWindow {
@@ -81,39 +72,48 @@ impl ToolWindow {
         );
     }
 
-    pub fn build(&mut self) {
-        if *IS_INSTALLED_WITH_SNAP {
-            self.build_snap_view();
-        } else if is_running("auto-cpufreq", "--daemon") {
-            self.build_main_view();
-        } else {
-            self.build_daemon_not_running_view();
+
+pub fn build(&mut self) {
+    let daemon_is_running = Self::check_daemon_running();
+
+    if daemon_is_running {
+        self.build_main_view();
+    } else {
+        self.build_daemon_not_running_view();
+    }
+}
+fn check_daemon_running() -> bool {
+    // Method 1: Check via is_running (process list)
+    if is_running("auto-cpufreq", "--daemon") {
+        return true;
+    }
+
+    // Method 2: Check systemd service
+    if let Ok(output) = Command::new("systemctl")
+        .args(&["is-active", "auto-cpufreq"])
+        .output()
+    {
+        let status = String::from_utf8_lossy(&output.stdout);
+        if status.trim() == "active" {
+            return true;
         }
     }
 
-    fn build_snap_view(&self) {
-        let vbox = GtkBox::new(Orientation::Vertical, 10);
-        vbox.set_halign(gtk::Align::Center);
-        vbox.set_valign(gtk::Align::Center);
-
-        let label = Label::new(Some(
-            "GUI not available due to Snap package confinement limitations.\n\
-             Please install auto-cpufreq using auto-cpufreq-installer\n\
-             Visit the GitHub repo for more info"
-        ));
-        label.set_justify(gtk::Justification::Center);
-
-        let button = Button::with_label("GitHub Repo");
-        button.connect_clicked(|_| {
-            let _ = open::that(GITHUB);
-        });
-
-        vbox.append(&label);
-        vbox.append(&button);
-
-        self.window.set_child(Some(&vbox));
+    // Method 3: Check if stats file is recent (fallback)
+    let stats_path = "/var/run/auto-cpufreq.stats";
+    if let Ok(metadata) = std::fs::metadata(stats_path) {
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(elapsed) = modified.elapsed() {
+                if elapsed.as_secs() < 20 {
+                    return true;
+                }
+            }
+        }
     }
 
+    false
+}
+    // MERGED: Daemon not running view from version 2
     fn build_daemon_not_running_view(&mut self) {
         let vbox = GtkBox::new(Orientation::Vertical, 10);
         vbox.set_halign(gtk::Align::Center);
@@ -139,10 +139,6 @@ impl ToolWindow {
         let window_weak = self.window.downgrade();
         monitor_button.connect_clicked(move |_| {
             if let Some(window) = window_weak.upgrade() {
-                // Remove current child
-                window.set_child(gtk::Widget::NONE);
-                
-                // Build monitor view
                 let monitor_view = MonitorModeView::new(&window);
                 window.set_child(Some(monitor_view.widget()));
                 window.show();
@@ -223,43 +219,41 @@ impl ToolWindow {
         // Setup auto-refresh
         self.setup_refresh();
     }
-fn setup_refresh(&self) {
-    let system_stats = self.system_stats.clone();
-    let current_governor = self.current_governor.clone();
-    let battery_info = self.battery_info.clone();
-    let cpu_freq_scaling = self.cpu_freq_scaling.clone();
-    let system_stats_box = self.system_stats_box.clone();
 
-    glib::timeout_add_seconds_local(5, move || {
-        // Her widget'ın refresh metodunda zaten sleep var, burada ekstra yapmaya gerek yok
-        
-        if let Some(ref stats) = system_stats {
-            let mut stats_mut = stats.clone();
-            stats_mut.refresh();
-        }
-        if let Some(ref gov) = current_governor {
-            let mut gov_mut = gov.clone();
-            gov_mut.refresh();
-        }
-        if let Some(ref bat) = battery_info {
-            let mut bat_mut = bat.clone();
-            bat_mut.refresh();
-        }
-        if let Some(ref freq) = cpu_freq_scaling {
-            let mut freq_mut = freq.clone();
-            freq_mut.refresh();
-        }
-        if let Some(ref stats_box) = system_stats_box {
-            let mut stats_box_mut = stats_box.clone();
-            stats_box_mut.refresh();
-        }
+    fn setup_refresh(&self) {
+        let system_stats = self.system_stats.clone();
+        let current_governor = self.current_governor.clone();
+        let battery_info = self.battery_info.clone();
+        let cpu_freq_scaling = self.cpu_freq_scaling.clone();
+        let system_stats_box = self.system_stats_box.clone();
 
-        glib::ControlFlow::Continue
-    });
-}
+        glib::timeout_add_seconds_local(5, move || {
+            if let Some(ref stats) = system_stats {
+                let mut stats_mut = stats.clone();
+                stats_mut.refresh();
+            }
+            if let Some(ref gov) = current_governor {
+                let mut gov_mut = gov.clone();
+                gov_mut.refresh();
+            }
+            if let Some(ref bat) = battery_info {
+                let mut bat_mut = bat.clone();
+                bat_mut.refresh();
+            }
+            if let Some(ref freq) = cpu_freq_scaling {
+                let mut freq_mut = freq.clone();
+                freq_mut.refresh();
+            }
+            if let Some(ref stats_box) = system_stats_box {
+                let mut stats_box_mut = stats_box.clone();
+                stats_box_mut.refresh();
+            }
+
+            glib::ControlFlow::Continue
+        });
+    }
+
     fn install_daemon(window: &ApplicationWindow) {
-        use std::process::Command;
-
         let result = Command::new("pkexec")
             .arg("auto-cpufreq")
             .arg("--install")
@@ -324,7 +318,7 @@ fn setup_refresh(&self) {
     }
 }
 
-// Monitor Mode View
+// MERGED: Monitor Mode View from version 2
 pub struct MonitorModeView {
     container: GtkBox,
     title: Label,
@@ -341,7 +335,6 @@ impl MonitorModeView {
         container.set_margin_top(10);
         container.set_margin_bottom(10);
 
-        // Header
         let header = GtkBox::new(Orientation::Horizontal, 0);
         header.set_margin_bottom(10);
 
@@ -353,12 +346,13 @@ impl MonitorModeView {
 
         let back_button = Button::with_label("Back");
         let window_weak = parent_window.downgrade();
+        let running = Rc::new(RefCell::new(true));
+        let running_clone = running.clone();
+        
         back_button.connect_clicked(move |_| {
+            *running_clone.borrow_mut() = false;
+            
             if let Some(window) = window_weak.upgrade() {
-                // Remove current child
-                window.set_child(gtk::Widget::NONE);
-                
-                // Rebuild daemon not running view
                 let vbox = GtkBox::new(Orientation::Vertical, 10);
                 vbox.set_halign(gtk::Align::Center);
                 vbox.set_valign(gtk::Align::Center);
@@ -373,6 +367,20 @@ impl MonitorModeView {
 
                 let install_button = Button::with_label("Install Daemon");
                 let monitor_button = Button::with_label("Monitor Mode");
+
+                let window_clone = window.clone();
+                install_button.connect_clicked(move |_| {
+                    ToolWindow::install_daemon(&window_clone);
+                });
+
+                let window_weak2 = window.downgrade();
+                monitor_button.connect_clicked(move |_| {
+                    if let Some(win) = window_weak2.upgrade() {
+                        let monitor_view = MonitorModeView::new(&win);
+                        win.set_child(Some(monitor_view.widget()));
+                        win.show();
+                    }
+                });
 
                 button_box.append(&install_button);
                 button_box.append(&monitor_button);
@@ -389,7 +397,6 @@ impl MonitorModeView {
 
         container.append(&header);
 
-        // Two column layout
         let columns = GtkBox::new(Orientation::Horizontal, 20);
         columns.set_vexpand(true);
         columns.set_hexpand(true);
@@ -418,8 +425,6 @@ impl MonitorModeView {
 
         container.append(&columns);
 
-        let running = Rc::new(RefCell::new(true));
-        
         let mut view = Self {
             container,
             title,
@@ -428,7 +433,7 @@ impl MonitorModeView {
             running,
         };
 
-        view.refresh();
+        view.do_refresh();
         view.setup_refresh();
         view
     }
@@ -437,14 +442,23 @@ impl MonitorModeView {
         let left_box = self.left_box.clone();
         let right_box = self.right_box.clone();
         let title = self.title.clone();
-        let running = self.running.clone();
+        let running = Rc::downgrade(&self.running);
 
-        glib::timeout_add_seconds_local(5, move || {
-            if !*running.borrow() {
+        glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
+            let running_strong = match running.upgrade() {
+                Some(r) => r,
+                None => return glib::ControlFlow::Break,
+            };
+
+            if !*running_strong.borrow() {
                 return glib::ControlFlow::Break;
             }
 
             let mut sys = System::new_all();
+            sys.refresh_cpu();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            sys.refresh_cpu();
+            
             let report = SystemInfo::new().generate_system_report(&mut sys);
 
             Self::update_display(&left_box, &right_box, &title, &report);
@@ -452,8 +466,12 @@ impl MonitorModeView {
         });
     }
 
-     fn refresh(&mut self) {
+    fn do_refresh(&mut self) {
         let mut sys = System::new_all();
+        sys.refresh_cpu();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_cpu();
+        
         let report = SystemInfo::new().generate_system_report(&mut sys);
         Self::update_display(&self.left_box, &self.right_box, &self.title, &report);
     }
@@ -481,18 +499,16 @@ impl MonitorModeView {
         Self::clear_box(left_box);
         Self::clear_box(right_box);
 
-        // Update title with timestamp
         let current_time = chrono::Local::now().format("%H:%M:%S");
         title.set_text(&format!("Monitor Mode - {}", current_time));
 
-        // Left column - System Information
         left_box.append(&Self::create_separator("System Information"));
         left_box.append(&Self::create_label(&format!("Linux distro: {} {}", report.distro_name, report.distro_ver), gtk::Align::Start));
         left_box.append(&Self::create_label(&format!("Linux kernel: {}", report.kernel_version), gtk::Align::Start));
         left_box.append(&Self::create_label(&format!("Processor: {}", report.processor_model), gtk::Align::Start));
-        left_box.append(&Self::create_label(&format!("Cores: {:?}", report.total_core), gtk::Align::Start));
+        left_box.append(&Self::create_label(&format!("Cores: {}", report.total_core.map_or("Unknown".to_string(), |c| c.to_string())), gtk::Align::Start));
         left_box.append(&Self::create_label(&format!("Architecture: {}", report.arch), gtk::Align::Start));
-        left_box.append(&Self::create_label(&format!("Driver: {:?}", report.cpu_driver), gtk::Align::Start));
+        left_box.append(&Self::create_label(&format!("Driver: {}", report.cpu_driver.as_deref().unwrap_or("Unknown")), gtk::Align::Start));
 
         if crate::CONFIG.has_config() {
             left_box.append(&Self::create_label(&format!("\nUsing settings defined in {}", crate::CONFIG.get_path().display()), gtk::Align::Start));
@@ -500,7 +516,6 @@ impl MonitorModeView {
 
         left_box.append(&Self::create_label("", gtk::Align::Start));
 
-        // CPU Stats
         left_box.append(&Self::create_separator("Current CPU Stats"));
         left_box.append(&Self::create_label(
             &format!("CPU max frequency: {} MHz", report.cpu_max_freq.map_or("Unknown".to_string(), |f| format!("{:.0}", f))),
@@ -525,9 +540,16 @@ impl MonitorModeView {
             left_box.append(&Self::create_label(&format!("CPU fan speed: {} RPM", fan), gtk::Align::Start));
         }
 
-        // Right column - Battery Stats
         right_box.append(&Self::create_separator("Battery Stats"));
-        right_box.append(&Self::create_label(&format!("Battery status: {:?}", report.battery_info), gtk::Align::Start));
+        
+        let battery_status = if report.battery_info.is_charging.unwrap_or(false) {
+            "Charging"
+        } else if report.battery_info.is_ac_plugged.unwrap_or(true) {
+            "Charged"
+        } else {
+            "Discharging"
+        };
+        right_box.append(&Self::create_label(&format!("Battery status: {}", battery_status), gtk::Align::Start));
         
         let battery_level = report.battery_info.battery_level
             .map(|b| format!("{}%", b))
@@ -540,17 +562,16 @@ impl MonitorModeView {
         right_box.append(&Self::create_label(&format!("AC plugged: {}", ac_status), gtk::Align::Start));
 
         let start_threshold = report.battery_info.charging_start_threshold
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
+            .map(|t| format!("{}%", t))
+            .unwrap_or_else(|| "Not set".to_string());
         right_box.append(&Self::create_label(&format!("Charging start threshold: {}", start_threshold), gtk::Align::Start));
 
         let stop_threshold = report.battery_info.charging_stop_threshold
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
+            .map(|t| format!("{}%", t))
+            .unwrap_or_else(|| "Not set".to_string());
         right_box.append(&Self::create_label(&format!("Charging stop threshold: {}", stop_threshold), gtk::Align::Start));
         right_box.append(&Self::create_label("", gtk::Align::Start));
 
-        // CPU Frequency Scaling
         right_box.append(&Self::create_separator("CPU Frequency Scaling"));
         let current_gov = report.current_gov.as_deref().unwrap_or("Unknown");
         right_box.append(&Self::create_label(&format!("Setting to use: \"{}\" governor", current_gov), gtk::Align::Start));
@@ -574,7 +595,6 @@ impl MonitorModeView {
 
         right_box.append(&Self::create_label("", gtk::Align::Start));
 
-        // System Statistics
         right_box.append(&Self::create_separator("System Statistics"));
         right_box.append(&Self::create_label(&format!("Total CPU usage: {:.1} %", report.cpu_usage), gtk::Align::Start));
         right_box.append(&Self::create_label(&format!("Total system load: {:.2}", report.load), gtk::Align::Start));
@@ -618,6 +638,7 @@ impl MonitorModeView {
             }
         }
     }
+    
     pub fn widget(&self) -> &GtkBox {  
         &self.container
     }
@@ -642,12 +663,16 @@ pub fn run_app() {
         let tool_window = ToolWindow::new(app);
         ToolWindow::load_css();
         
-        // Try to set icon if it exists
         if std::fs::metadata(icon_file()).is_ok() {
-            let _ = tool_window.borrow().window.set_icon_name(Some("auto-cpufreq"));
+            let borrowed = tool_window.borrow();
+            let _ = borrowed.window.set_icon_name(Some("auto-cpufreq"));
         }
         
-        tool_window.borrow_mut().build();
+        {
+            let mut tw = tool_window.borrow_mut();
+            tw.build();
+        }
+        
         tool_window.borrow().show();
     });
 

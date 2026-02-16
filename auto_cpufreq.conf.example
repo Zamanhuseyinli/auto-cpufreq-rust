@@ -1,0 +1,160 @@
+# auto-cpufreq configuration file
+# 
+# This file allows you to customize auto-cpufreq behavior
+# Location: /etc/auto-cpufreq.conf or ~/.config/auto-cpufreq/auto-cpufreq.conf
+#
+# For more information, visit:
+# https://github.com/AdnanHodzic/auto-cpufreq
+
+# ============================================================================
+# CHARGER (AC Power) Settings
+# ============================================================================
+[charger]
+
+# Governor to use when plugged in
+# Options: performance, powersave, ondemand, conservative, schedutil
+# Default: performance (or best available)
+governor = performance
+
+# Scaling frequencies
+# Set minimum and maximum CPU frequency (in MHz)
+# Leave commented to use system defaults
+# scaling_min_freq = 1400000
+# scaling_max_freq = 3500000
+
+# Energy Performance Preference (EPP) - Intel only
+# Options: performance, balance_performance, balance_power, power
+# Default: balance_performance
+energy_performance_preference = balance_performance
+
+# Energy Performance Bias (EPB) - Intel only  
+# Options: performance, balance_performance, normal, balance_power, power
+# Default: balance_performance
+# energy_perf_bias = balance_performance
+
+# Turbo Boost
+# Options: always, auto, never
+# Default: auto
+# turbo = auto
+
+# ============================================================================
+# BATTERY (Unplugged) Settings
+# ============================================================================
+[battery]
+
+# Governor to use when on battery
+# Options: performance, powersave, ondemand, conservative, schedutil
+# Default: powersave (or best available for battery)
+governor = powersave
+
+# Scaling frequencies
+# scaling_min_freq = 1400000
+# scaling_max_freq = 1800000
+
+# Energy Performance Preference (EPP) - Intel only
+# Options: performance, balance_performance, balance_power, power
+# Default: power
+energy_performance_preference = power
+
+# Energy Performance Bias (EPB) - Intel only
+# energy_perf_bias = power
+
+# Turbo Boost
+# turbo = auto
+
+# Enable battery charge thresholds (supported laptops only)
+# Helps extend battery lifespan by limiting charge levels
+# Default: false
+enable_thresholds = false
+
+# Start charging when battery drops below this percentage
+# Range: 0-100
+# Default: 20
+charging_start_threshold = 20
+
+# Stop charging when battery reaches this percentage  
+# Range: 0-100
+# Default: 80
+charging_stop_threshold = 80
+
+# Ideapad Laptop Conservation Mode (Lenovo IdeaPad only)
+# When enabled, battery charge is limited to 55-60%
+# Options: true, false
+# Default: false
+# ideapad_laptop_conservation_mode = false
+
+# Battery device name (if auto-detection fails)
+# Find yours with: ls /sys/class/power_supply/
+# Example: BAT0, BAT1, battery
+# battery_device = BAT0
+
+# ============================================================================
+# PLATFORM SPECIFIC Settings
+# ============================================================================
+
+# AMD P-State Driver Settings (AMD Ryzen 6000+ series)
+# amd_pstate_mode = active
+
+# Intel P-State Driver Settings
+# intel_pstate_mode = active
+
+# ============================================================================
+# EXAMPLES FOR DIFFERENT USE CASES
+# ============================================================================
+
+# --------------------------------------------------
+# Example 1: Maximum Performance (Gaming/Video Editing)
+# --------------------------------------------------
+# [charger]
+# governor = performance
+# turbo = always
+# energy_performance_preference = performance
+#
+# [battery]
+# governor = performance
+# turbo = auto
+# energy_performance_preference = balance_performance
+
+# --------------------------------------------------
+# Example 2: Maximum Battery Life (Light Usage)
+# --------------------------------------------------
+# [charger]
+# governor = powersave
+# turbo = auto
+# energy_performance_preference = balance_power
+#
+# [battery]
+# governor = powersave
+# turbo = never
+# energy_performance_preference = power
+# enable_thresholds = true
+# charging_start_threshold = 20
+# charging_stop_threshold = 80
+
+# --------------------------------------------------
+# Example 3: Balanced (Default Behavior)
+# --------------------------------------------------
+# [charger]
+# governor = performance
+# turbo = auto
+# energy_performance_preference = balance_performance
+#
+# [battery]
+# governor = powersave
+# turbo = auto
+# energy_performance_preference = power
+
+# --------------------------------------------------
+# Example 4: Extend Battery Lifespan (ThinkPad/Dell/HP)
+# --------------------------------------------------
+# [battery]
+# enable_thresholds = true
+# charging_start_threshold = 40
+# charging_stop_threshold = 60
+
+# --------------------------------------------------
+# Example 5: Lenovo IdeaPad Conservation Mode
+# --------------------------------------------------
+# [battery]
+# enable_thresholds = true
+# ideapad_laptop_conservation_mode = true

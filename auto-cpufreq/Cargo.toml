@@ -1,6 +1,6 @@
 [package]
 name = "auto-cpufreq"
-version = "3.0.0-rust1"
+version = "3.0.0-rust2"
 edition = "2021"
 
 [lib]

@@ -1,5 +1,3 @@
-// src/battery/thinkpad.rs
-
 use std::path::{Path, PathBuf};
 use anyhow::{Result, Context};
 
@@ -63,33 +61,43 @@ fn get_threshold_value(config: &Config, mode: &str) -> u8 {
 }
 
 fn set_battery(value: u8, mode: &str, battery: &str) -> Result<()> {
-    let path = PathBuf::from(format!(
+    let file_path = PathBuf::from(format!(
         "{}{}/charge_{}_threshold",
         POWER_SUPPLY_DIR, battery, mode
     ));
     
-    if !path.exists() {
-        println!("WARNING: {} does NOT exist", path.display());
+    if !file_path.exists() {
+        println!("WARNING: {} does NOT exist", file_path.display());
         return Ok(());
     }
     
-    std::process::Command::new("sh")
+    match std::process::Command::new("sh")
         .arg("-c")
-        .arg(format!("echo {} | tee {}", value, path.display()))
+        .arg(format!("echo {} | tee {}", value, file_path.display()))
         .output()
-        .with_context(|| format!("Failed to set battery threshold"))?;
+    {
+        Ok(output) => {
+            if !output.status.success() {
+                println!("WARNING: Failed to set {} threshold for {}", mode, battery);
+                println!("  stderr: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        Err(e) => {
+            println!("WARNING: Command failed for {} threshold: {}", mode, e);
+        }
+    }
     
     Ok(())
 }
 
 fn read_threshold(battery: &str, mode: &str) -> Result<String> {
-    let path = PathBuf::from(format!(
+    let file_path = PathBuf::from(format!(
         "{}{}/charge_{}_threshold",
         POWER_SUPPLY_DIR, battery, mode
     ));
     
     std::process::Command::new("cat")
-        .arg(&path)
+        .arg(&file_path)
         .output()
         .with_context(|| format!("Failed to read threshold"))
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())

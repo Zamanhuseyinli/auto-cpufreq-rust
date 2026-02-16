@@ -1,4 +1,4 @@
-// src/gui/objects.rs
+// src/gui/objects.rs 
 
 use gtk::{self, Box as GtkBox, Button, Label, Orientation, Revealer, RevealerTransitionType, ScrolledWindow};
 use gtk::prelude::*;
@@ -14,11 +14,7 @@ use crate::modules::system_info::SystemInfo;
 
 
 fn auto_cpufreq_stats_path() -> &'static str {
-    if *IS_INSTALLED_WITH_SNAP {
-        "/var/snap/auto-cpufreq/current/auto-cpufreq.stats"
-    } else {
-        "/var/run/auto-cpufreq.stats"
-    }
+    "/var/run/auto-cpufreq.stats"
 }
 
 pub fn get_stats() -> String {
@@ -37,14 +33,9 @@ pub fn get_stats() -> String {
         })
         .unwrap_or_default()
 }
-
 pub fn get_version() -> String {
-    if *IS_INSTALLED_WITH_SNAP {
-        std::env::var("SNAP_VERSION")
-            .map(|v| format!("(Snap) {}", v))
-            .unwrap_or_else(|_| "Unknown".to_string())
-    } else if *IS_INSTALLED_WITH_AUR {
-        Command::new("pacman")
+    if *IS_INSTALLED_WITH_AUR {
+        std::process::Command::new("pacman")
             .args(&["-Qi", "auto-cpufreq"])
             .output()
             .ok()
@@ -59,7 +50,6 @@ pub fn get_version() -> String {
         get_formatted_version().unwrap_or_else(|_| "Unknown".to_string())
     }
 }
-
 pub fn get_bluetooth_boot_status() -> Option<String> {
     if !*BLUETOOTHCTL_EXISTS {
         return None;
@@ -120,7 +110,6 @@ impl RadioButtonView {
         let set_by_app = Rc::new(RefCell::new(true));
         let selected = Rc::new(RefCell::new(Some("Default".to_string())));
 
-        // Manual radio logic: only one can be selected
         let sel_clone = selected.clone();
         let set_by_app_clone = set_by_app.clone();
         let default_clone = default.clone();
@@ -131,7 +120,6 @@ impl RadioButtonView {
             if !*set_by_app_clone.borrow() {
                 *sel_clone.borrow_mut() = Some("Default".to_string());
                 Self::on_button_toggled("reset");
-                // Update button states
                 default_clone.set_sensitive(false);
                 powersave_clone.set_sensitive(true);
                 performance_clone.set_sensitive(true);
@@ -148,7 +136,6 @@ impl RadioButtonView {
             if !*set_by_app_clone.borrow() {
                 *sel_clone.borrow_mut() = Some("Powersave".to_string());
                 Self::on_button_toggled("powersave");
-                // Update button states
                 default_clone2.set_sensitive(true);
                 powersave_clone2.set_sensitive(false);
                 performance_clone2.set_sensitive(true);
@@ -165,7 +152,6 @@ impl RadioButtonView {
             if !*set_by_app_clone.borrow() {
                 *sel_clone.borrow_mut() = Some("Performance".to_string());
                 Self::on_button_toggled("performance");
-                // Update button states
                 default_clone3.set_sensitive(true);
                 powersave_clone3.set_sensitive(true);
                 performance_clone3.set_sensitive(false);
@@ -213,7 +199,6 @@ impl RadioButtonView {
         };
         *self.selected.borrow_mut() = Some(label.to_string());
         
-        // Update button states
         self.default.set_sensitive(active_btn != 0);
         self.powersave.set_sensitive(active_btn != 1);
         self.performance.set_sensitive(active_btn != 2);
@@ -254,7 +239,6 @@ impl CPUTurboOverride {
         let set_by_app = Rc::new(RefCell::new(true));
         let selected = Rc::new(RefCell::new(Some("Auto".to_string())));
 
-        // Manual radio logic: only one can be selected
         let sel_clone = selected.clone();
         let set_by_app_clone = set_by_app.clone();
         let auto_clone = auto.clone();
@@ -265,7 +249,6 @@ impl CPUTurboOverride {
             if !*set_by_app_clone.borrow() {
                 *sel_clone.borrow_mut() = Some("Auto".to_string());
                 Self::on_button_toggled("auto");
-                // Update button states
                 auto_clone.set_sensitive(false);
                 never_clone.set_sensitive(true);
                 always_clone.set_sensitive(true);
@@ -282,7 +265,6 @@ impl CPUTurboOverride {
             if !*set_by_app_clone.borrow() {
                 *sel_clone.borrow_mut() = Some("Never".to_string());
                 Self::on_button_toggled("never");
-                // Update button states
                 auto_clone2.set_sensitive(true);
                 never_clone2.set_sensitive(false);
                 always_clone2.set_sensitive(true);
@@ -299,7 +281,6 @@ impl CPUTurboOverride {
             if !*set_by_app_clone.borrow() {
                 *sel_clone.borrow_mut() = Some("Always".to_string());
                 Self::on_button_toggled("always");
-                // Update button states
                 auto_clone3.set_sensitive(true);
                 never_clone3.set_sensitive(true);
                 always_clone3.set_sensitive(false);
@@ -347,7 +328,6 @@ impl CPUTurboOverride {
         };
         *self.selected.borrow_mut() = Some(label.to_string());
         
-        // Update button states
         self.auto.set_sensitive(active_btn != 0);
         self.never.set_sensitive(active_btn != 1);
         self.always.set_sensitive(active_btn != 2);
@@ -405,7 +385,6 @@ impl BluetoothBootControl {
         container.append(&advanced_btn);
         container.append(&revealer);
 
-        // Connect advanced button
         let revealer_clone = revealer.clone();
         let btn_clone = advanced_btn.clone();
         advanced_btn.connect_clicked(move |_| {
@@ -418,7 +397,6 @@ impl BluetoothBootControl {
             }
         });
 
-        // Manual radio logic: only one can be selected
         let sel_clone = selected.clone();
         let set_by_app_clone = set_by_app.clone();
         let on_clone = on_btn.clone();
@@ -482,7 +460,6 @@ impl BluetoothBootControl {
 
     fn set_selected(&mut self) {
         *self.set_by_app.borrow_mut() = true;
-        // Set the selected field based on status
         let active_btn = match get_bluetooth_boot_status() {
             Some(status) if status == "off" => {
                 *self.selected.borrow_mut() = Some("Off".to_string());
@@ -505,11 +482,19 @@ impl BluetoothBootControl {
     }
 }
 
-// CurrentGovernorBox
-#[derive(Clone)]
+// CurrentGovernorBox - FIXED: Use RefCell for interior mutability
 pub struct CurrentGovernorBox {
     container: GtkBox,
-    governor_label: Label,
+    governor_label: Rc<RefCell<Label>>,
+}
+
+impl Clone for CurrentGovernorBox {
+    fn clone(&self) -> Self {
+        Self {
+            container: self.container.clone(),
+            governor_label: self.governor_label.clone(),
+        }
+    }
 }
 
 impl CurrentGovernorBox {
@@ -527,7 +512,7 @@ impl CurrentGovernorBox {
 
         let mut box_widget = Self {
             container,
-            governor_label,
+            governor_label: Rc::new(RefCell::new(governor_label)),
         };
 
         box_widget.refresh();
@@ -536,7 +521,7 @@ impl CurrentGovernorBox {
 
     pub fn refresh(&mut self) {
         if let Ok(gov) = get_current_gov() {
-            self.governor_label.set_text(&gov);
+            self.governor_label.borrow().set_text(&gov);
         }
     }
 
@@ -545,16 +530,27 @@ impl CurrentGovernorBox {
     }
 }
 
-// BatteryInfoBox
-// BatteryInfoBox
-#[derive(Clone)]
+// BatteryInfoBox - FIXED: Use RefCell
 pub struct BatteryInfoBox {
     container: GtkBox,
-    status_label: Label,
-    percentage_label: Label,
-    ac_label: Label,
-    start_threshold_label: Label,
-    stop_threshold_label: Label,
+    status_label: Rc<RefCell<Label>>,
+    percentage_label: Rc<RefCell<Label>>,
+    ac_label: Rc<RefCell<Label>>,
+    start_threshold_label: Rc<RefCell<Label>>,
+    stop_threshold_label: Rc<RefCell<Label>>,
+}
+
+impl Clone for BatteryInfoBox {
+    fn clone(&self) -> Self {
+        Self {
+            container: self.container.clone(),
+            status_label: self.status_label.clone(),
+            percentage_label: self.percentage_label.clone(),
+            ac_label: self.ac_label.clone(),
+            start_threshold_label: self.start_threshold_label.clone(),
+            stop_threshold_label: self.stop_threshold_label.clone(),
+        }
+    }
 }
 
 impl BatteryInfoBox {
@@ -588,11 +584,11 @@ impl BatteryInfoBox {
 
         let mut box_widget = Self {
             container,
-            status_label,
-            percentage_label,
-            ac_label,
-            start_threshold_label,
-            stop_threshold_label,
+            status_label: Rc::new(RefCell::new(status_label)),
+            percentage_label: Rc::new(RefCell::new(percentage_label)),
+            ac_label: Rc::new(RefCell::new(ac_label)),
+            start_threshold_label: Rc::new(RefCell::new(start_threshold_label)),
+            stop_threshold_label: Rc::new(RefCell::new(stop_threshold_label)),
         };
 
         box_widget.refresh();
@@ -602,27 +598,34 @@ impl BatteryInfoBox {
     pub fn refresh(&mut self) {
         let battery_info = SystemInfo::battery_info();
 
-        self.status_label.set_text(&format!("Battery status: {:?}", battery_info));
+        let status = if battery_info.is_charging.unwrap_or(false) {
+            "Charging"
+        } else if battery_info.is_ac_plugged.unwrap_or(true) {
+            "Charged"
+        } else {
+            "Discharging"
+        };
+        self.status_label.borrow().set_text(&format!("Battery status: {}", status));
 
         let percentage_text = battery_info.battery_level
             .map(|b| format!("{}%", b))
             .unwrap_or_else(|| "Unknown".to_string());
-        self.percentage_label.set_text(&format!("Battery percentage: {}", percentage_text));
+        self.percentage_label.borrow().set_text(&format!("Battery level: {}", percentage_text));
 
         let ac_text = battery_info.is_ac_plugged
             .map(|ac| if ac { "Yes" } else { "No" })
             .unwrap_or("Unknown");
-        self.ac_label.set_text(&format!("AC plugged: {}", ac_text));
+        self.ac_label.borrow().set_text(&format!("AC plugged: {}", ac_text));
 
         let start_text = battery_info.charging_start_threshold
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "None".to_string());
-        self.start_threshold_label.set_text(&format!("Charging start threshold: {}", start_text));
+            .map(|t| format!("{}%", t))
+            .unwrap_or_else(|| "Not set".to_string());
+        self.start_threshold_label.borrow().set_text(&format!("Start threshold: {}", start_text));
 
         let stop_text = battery_info.charging_stop_threshold
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "None".to_string());
-        self.stop_threshold_label.set_text(&format!("Charging stop threshold: {}", stop_text));
+            .map(|t| format!("{}%", t))
+            .unwrap_or_else(|| "Not set".to_string());
+        self.stop_threshold_label.borrow().set_text(&format!("Stop threshold: {}", stop_text));
     }
 
     pub fn widget(&self) -> &GtkBox {
@@ -630,13 +633,23 @@ impl BatteryInfoBox {
     }
 }
 
-// CPUFreqScalingBox
-#[derive(Clone)]
+// CPUFreqScalingBox - FIXED: Use RefCell
 pub struct CPUFreqScalingBox {
     container: GtkBox,
-    governor_label: Label,
-    epp_label: Label,
-    epb_label: Label,
+    governor_label: Rc<RefCell<Label>>,
+    epp_label: Rc<RefCell<Label>>,
+    epb_label: Rc<RefCell<Label>>,
+}
+
+impl Clone for CPUFreqScalingBox {
+    fn clone(&self) -> Self {
+        Self {
+            container: self.container.clone(),
+            governor_label: self.governor_label.clone(),
+            epp_label: self.epp_label.clone(),
+            epb_label: self.epb_label.clone(),
+        }
+    }
 }
 
 impl CPUFreqScalingBox {
@@ -662,9 +675,9 @@ impl CPUFreqScalingBox {
 
         let mut box_widget = Self {
             container,
-            governor_label,
-            epp_label,
-            epb_label,
+            governor_label: Rc::new(RefCell::new(governor_label)),
+            epp_label: Rc::new(RefCell::new(epp_label)),
+            epb_label: Rc::new(RefCell::new(epb_label)),
         };
 
         box_widget.refresh();
@@ -673,26 +686,32 @@ impl CPUFreqScalingBox {
 
     pub fn refresh(&mut self) {
         let mut sys = System::new_all();
-        sys.refresh_cpu();  
+        sys.refresh_cpu();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_cpu();
         
-        let report = SystemInfo::new().generate_system_report(&mut sys);
+        self.refresh_with_system(&mut sys);
+    }
+
+    pub fn refresh_with_system(&mut self, sys: &mut System) {
+        let report = SystemInfo::new().generate_system_report(sys);
 
         let gov = report.current_gov.unwrap_or_else(|| "Unknown".to_string());
-        self.governor_label.set_text(&format!("Setting to use: \"{}\" governor", gov));
+        self.governor_label.borrow().set_text(&format!("Setting to use: \"{}\" governor", gov));
 
         if let Some(epp) = report.current_epp {
-            self.epp_label.set_text(&format!("EPP setting: {}", epp));
-            self.epp_label.set_visible(true);
+            self.epp_label.borrow().set_text(&format!("EPP setting: {}", epp));
+            self.epp_label.borrow().set_visible(true);
         } else {
-            self.epp_label.set_text("Not setting EPP (not supported by system)");
-            self.epp_label.set_visible(true);
+            self.epp_label.borrow().set_text("Not setting EPP (not supported by system)");
+            self.epp_label.borrow().set_visible(true);
         }
 
         if let Some(epb) = report.current_epb {
-            self.epb_label.set_text(&format!("Setting to use: \"{}\" EPB", epb));
-            self.epb_label.set_visible(true);
+            self.epb_label.borrow().set_text(&format!("Setting to use: \"{}\" EPB", epb));
+            self.epb_label.borrow().set_visible(true);
         } else {
-            self.epb_label.set_visible(false);
+            self.epb_label.borrow().set_visible(false);
         }
     }
 
@@ -701,17 +720,31 @@ impl CPUFreqScalingBox {
     }
 }
 
-// SystemStatisticsBox
-#[derive(Clone)]
+// SystemStatisticsBox - FIXED: Use RefCell
 pub struct SystemStatisticsBox {
     container: GtkBox,
-    cpu_usage_label: Label,
-    load_label: Label,
-    temp_label: Label,
-    fan_label: Label,
-    load_status_label: Label,
-    usage_status_label: Label,
-    turbo_label: Label,
+    cpu_usage_label: Rc<RefCell<Label>>,
+    load_label: Rc<RefCell<Label>>,
+    temp_label: Rc<RefCell<Label>>,
+    fan_label: Rc<RefCell<Label>>,
+    load_status_label: Rc<RefCell<Label>>,
+    usage_status_label: Rc<RefCell<Label>>,
+    turbo_label: Rc<RefCell<Label>>,
+}
+
+impl Clone for SystemStatisticsBox {
+    fn clone(&self) -> Self {
+        Self {
+            container: self.container.clone(),
+            cpu_usage_label: self.cpu_usage_label.clone(),
+            load_label: self.load_label.clone(),
+            temp_label: self.temp_label.clone(),
+            fan_label: self.fan_label.clone(),
+            load_status_label: self.load_status_label.clone(),
+            usage_status_label: self.usage_status_label.clone(),
+            turbo_label: self.turbo_label.clone(),
+        }
+    }
 }
 
 impl SystemStatisticsBox {
@@ -753,13 +786,13 @@ impl SystemStatisticsBox {
 
         let mut box_widget = Self {
             container,
-            cpu_usage_label,
-            load_label,
-            temp_label,
-            fan_label,
-            load_status_label,
-            usage_status_label,
-            turbo_label,
+            cpu_usage_label: Rc::new(RefCell::new(cpu_usage_label)),
+            load_label: Rc::new(RefCell::new(load_label)),
+            temp_label: Rc::new(RefCell::new(temp_label)),
+            fan_label: Rc::new(RefCell::new(fan_label)),
+            load_status_label: Rc::new(RefCell::new(load_status_label)),
+            usage_status_label: Rc::new(RefCell::new(usage_status_label)),
+            turbo_label: Rc::new(RefCell::new(turbo_label)),
         };
 
         box_widget.refresh();
@@ -768,45 +801,50 @@ impl SystemStatisticsBox {
 
     pub fn refresh(&mut self) {
         let mut sys = System::new_all();
-        sys.refresh_cpu();  
+        sys.refresh_cpu();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_cpu();
         
-        
-        let report = SystemInfo::new().generate_system_report(&mut sys);
+        self.refresh_with_system(&mut sys);
+    }
 
-        self.cpu_usage_label.set_text(&format!("Total CPU usage: {:.1} %", report.cpu_usage));
-        self.load_label.set_text(&format!("Total system load: {:.2}", report.load));
+    pub fn refresh_with_system(&mut self, sys: &mut System) {
+        let report = SystemInfo::new().generate_system_report(sys);
+
+        self.cpu_usage_label.borrow().set_text(&format!("Total CPU usage: {:.1} %", report.cpu_usage));
+        self.load_label.borrow().set_text(&format!("Total system load: {:.2}", report.load));
 
         if !report.cores_info.is_empty() {
             let avg_temp: f32 = report.cores_info.iter().map(|c| c.temperature).sum::<f32>() / report.cores_info.len() as f32;
-            self.temp_label.set_text(&format!("Average temp. of all cores: {:.2} °C", avg_temp));
-            self.temp_label.set_visible(true);
+            self.temp_label.borrow().set_text(&format!("Average temp. of all cores: {:.2} °C", avg_temp));
+            self.temp_label.borrow().set_visible(true);
         } else {
-            self.temp_label.set_visible(false);
+            self.temp_label.borrow().set_visible(false);
         }
 
         if let Some(fan) = report.cpu_fan_speed {
-            self.fan_label.set_text(&format!("CPU fan speed: {} RPM", fan));
-            self.fan_label.set_visible(true);
+            self.fan_label.borrow().set_text(&format!("CPU fan speed: {} RPM", fan));
+            self.fan_label.borrow().set_visible(true);
         } else {
-            self.fan_label.set_visible(false);
+            self.fan_label.borrow().set_visible(false);
         }
 
         if let Some((a, b, c)) = report.avg_load {
             let load_status = if report.load < 1.0 { "Load optimal" } else { "Load high" };
-            self.load_status_label.set_text(&format!("{} (load average: {:.2}, {:.2}, {:.2})", load_status, a, b, c));
-            self.load_status_label.set_visible(true);
+            self.load_status_label.borrow().set_text(&format!("{} (load average: {:.2}, {:.2}, {:.2})", load_status, a, b, c));
+            self.load_status_label.borrow().set_visible(true);
         } else {
-            self.load_status_label.set_visible(false);
+            self.load_status_label.borrow().set_visible(false);
         }
 
         if !report.cores_info.is_empty() {
             let avg_temp: f32 = report.cores_info.iter().map(|c| c.temperature).sum::<f32>() / report.cores_info.len() as f32;
             let usage_status = if report.cpu_usage < 70.0 { "Optimal" } else { "High" };
             let temp_status = if avg_temp > 75.0 { "high" } else { "normal" };
-            self.usage_status_label.set_text(&format!("{} total CPU usage: {:.1}%, {} average core temp: {:.1}°C", usage_status, report.cpu_usage, temp_status, avg_temp));
-            self.usage_status_label.set_visible(true);
+            self.usage_status_label.borrow().set_text(&format!("{} total CPU usage: {:.1}%, {} average core temp: {:.1}°C", usage_status, report.cpu_usage, temp_status, avg_temp));
+            self.usage_status_label.borrow().set_visible(true);
         } else {
-            self.usage_status_label.set_visible(false);
+            self.usage_status_label.borrow().set_visible(false);
         }
 
         let turbo_status = match (report.is_turbo_on.0, report.is_turbo_on.1) {
@@ -814,7 +852,7 @@ impl SystemStatisticsBox {
             (None, Some(auto)) => format!("Auto mode {}", if auto { "enabled" } else { "disabled" }),
             _ => "Unknown".into(),
         };
-        self.turbo_label.set_text(&format!("Setting turbo boost: {}", turbo_status));
+        self.turbo_label.borrow().set_text(&format!("Setting turbo boost: {}", turbo_status));
     }
 
     pub fn widget(&self) -> &GtkBox {
@@ -822,11 +860,19 @@ impl SystemStatisticsBox {
     }
 }
 
-// SystemStatsLabel
-#[derive(Clone)]
+// SystemStatsLabel - FIXED: Use RefCell
 pub struct SystemStatsLabel {
     scrolled: ScrolledWindow,
-    label: Label,
+    label: Rc<RefCell<Label>>,
+}
+
+impl Clone for SystemStatsLabel {
+    fn clone(&self) -> Self {
+        Self {
+            scrolled: self.scrolled.clone(),
+            label: self.label.clone(),
+        }
+    }
 }
 
 impl SystemStatsLabel {
@@ -842,16 +888,25 @@ impl SystemStatsLabel {
         
         scrolled.set_child(Some(&label));
 
-        let mut stats = Self { scrolled, label };
+        let mut stats = Self { 
+            scrolled, 
+            label: Rc::new(RefCell::new(label)),
+        };
         stats.refresh();
         stats
     }
 
     pub fn refresh(&mut self) {
-        let sys_info = SystemInfo::new();
         let mut sys = System::new_all();
-        sys.refresh_cpu();  
-         
+        sys.refresh_cpu();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_cpu();
+        
+        self.refresh_with_system(&mut sys);
+    }
+
+    pub fn refresh_with_system(&mut self, sys: &mut System) {
+        let sys_info = SystemInfo::new();
         
         let mut text = String::new();
         
@@ -877,7 +932,7 @@ impl SystemStatsLabel {
         
         text.push_str("Core    Usage   Temperature     Frequency\n");
         
-        let cores = SystemInfo::get_cpu_info(&mut sys);
+        let cores = SystemInfo::get_cpu_info(sys);
         for core in cores {
             text.push_str(&format!("CPU{:<2}    {:>4.1}%    {:>6.0} °C    {:>6.0} MHz\n",
                 core.id, core.usage, core.temperature, core.frequency));
@@ -887,7 +942,7 @@ impl SystemStatsLabel {
             text.push_str(&format!("\nCPU fan speed: {} RPM\n", fan));
         }
 
-        self.label.set_text(&text);
+        self.label.borrow().set_text(&text);
     }
 
     pub fn widget(&self) -> &ScrolledWindow {

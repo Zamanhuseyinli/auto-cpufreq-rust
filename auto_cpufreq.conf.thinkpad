@@ -1,0 +1,22 @@
+# auto-cpufreq configuration - ThinkPad Optimized
+# Optimized for: Lenovo ThinkPad laptops with battery threshold support
+
+[charger]
+governor = performance
+turbo = auto
+energy_performance_preference = balance_performance
+
+[battery]
+governor = powersave
+turbo = auto
+energy_performance_preference = power
+
+# ThinkPad battery conservation
+# Recommended: 40-60% for stationary use, 20-80% for mobile use
+enable_thresholds = true
+charging_start_threshold = 40
+charging_stop_threshold = 60
+
+# Alternative for mobile use:
+# charging_start_threshold = 20
+# charging_stop_threshold = 80

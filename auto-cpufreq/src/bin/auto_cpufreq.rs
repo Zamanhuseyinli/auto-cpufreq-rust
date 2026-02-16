@@ -3,7 +3,7 @@
 use anyhow::Result;
 use clap::Parser;
 use auto_cpufreq::config::{CONFIG, find_config_file};
-use auto_cpufreq::core::{*};
+use auto_cpufreq::core::*;
 use auto_cpufreq::globals::*;
 use auto_cpufreq::power_helper::*;
 use auto_cpufreq::battery;
@@ -11,7 +11,6 @@ use auto_cpufreq::modules::{SystemMonitor, ViewType};
 use std::thread;
 use std::time::Duration;
 
-// Explicitly use core::footer to resolve ambiguity
 use auto_cpufreq::core::footer;
 
 #[derive(Parser, Debug)]
@@ -72,6 +71,10 @@ struct Args {
     #[arg(long)]
     debug: bool,
 
+    /// Show verbose/detailed output (use with --monitor, --live, --stats)
+    #[arg(long, short)]
+    verbose: bool,
+
     /// Show currently installed version
     #[arg(long)]
     version: bool,
@@ -123,41 +126,28 @@ fn main() -> Result<()> {
     if args.monitor {
         root_check()?;
         battery::battery_setup(&CONFIG)?;
-        
-        if *IS_INSTALLED_WITH_SNAP {
-            gnome_power_detect_snap();
-            tlp_service_detect_snap();
-        } else {
-            gnome_power_detect()?;
-            tlp_service_detect()?;
-        }
+        gnome_power_detect().ok();
+        tlp_service_detect().ok();
 
-        if *IS_INSTALLED_WITH_SNAP || *TLP_STAT_EXISTS || 
-           (*SYSTEMCTL_EXISTS && gnome_power_status()?) {
+        if *TLP_STAT_EXISTS || (*SYSTEMCTL_EXISTS && gnome_power_status()?) {
             println!("press Enter to continue or Ctrl + C to exit...");
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
         }
 
-        let mut monitor = SystemMonitor::new(ViewType::Monitor, true);
+        let mut monitor = SystemMonitor::new_with_verbose(ViewType::Monitor, true, args.verbose);
         monitor.run_blocking();
         
     } else if args.live {
         root_check()?;
         battery::battery_setup(&CONFIG)?;
-        
-        if *IS_INSTALLED_WITH_SNAP {
-            gnome_power_detect_snap();
-            tlp_service_detect_snap();
-        } else {
-            gnome_power_detect_install()?;
-            gnome_power_stop_live()?;
-            tuned_stop_live()?;
-            tlp_service_detect()?;
-        }
 
-        if *IS_INSTALLED_WITH_SNAP || *TLP_STAT_EXISTS || 
-           (*SYSTEMCTL_EXISTS && gnome_power_status()?) {
+        gnome_power_detect_install().ok();
+        gnome_power_stop_live().ok();
+        tuned_stop_live().ok();
+        tlp_service_detect().ok();
+
+        if *TLP_STAT_EXISTS || (*SYSTEMCTL_EXISTS && gnome_power_status()?) {
             println!("press Enter to continue or Ctrl + C to exit...");
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
@@ -173,77 +163,65 @@ fn main() -> Result<()> {
             }
         });
 
-        let mut monitor = SystemMonitor::new(ViewType::Live, false);
+        let mut monitor = SystemMonitor::new_with_verbose(ViewType::Live, false, args.verbose);
         monitor.run_blocking();
         
         daemon_handle.join().unwrap();
-
+        
     } else if args.daemon {
         config_info_dialog();
         root_check()?;
-        // file_stats()?; // TODO: implement
-        
-        if *IS_INSTALLED_WITH_SNAP {
-            gnome_power_detect_snap();
-            tlp_service_detect_snap();
-        } else {
-            gnome_power_detect()?;
-            tlp_service_detect()?;
-        }
+        gnome_power_detect()?;
+        tlp_service_detect()?;
 
         battery::battery_setup(&CONFIG)?;
+        
+        println!("\n* Starting auto-cpufreq daemon");
+        println!("* Monitoring system and adjusting CPU frequency...\n");
 
         loop {
             footer(79);
-            // gov_check()?;
+            
+            // Update stats file
+            if let Err(e) = update_stats_file() {
+                eprintln!("WARNING: Failed to update stats file: {}", e);
+            }
+            
+            // Ensure cpufreqctl is available
             cpufreqctl()?;
-            distro_info()?;
-            sysinfo()?;
-            // set_autofreq()?;
+            
+            // Show system info (first iteration only)
+            static FIRST_RUN: std::sync::Once = std::sync::Once::new();
+            FIRST_RUN.call_once(|| {
+                let _ = distro_info();
+                let _ = sysinfo();
+            });
+            
+            // Main frequency adjustment logic
+            if let Err(e) = set_autofreq() {
+                eprintln!("ERROR: Failed to set auto frequency: {}", e);
+            }
+            
             countdown(2);
         }
-
+        
     } else if args.install {
         root_check()?;
         
-        if *IS_INSTALLED_WITH_SNAP {
-            gnome_power_detect_snap();
-            tlp_service_detect_snap();
-            bluetooth_notif_snap();
-            // gov_check()?;
-            
-            std::process::Command::new("snapctl")
-                .args(&["set", "daemon=enabled"])
-                .status()?;
-            
-            std::process::Command::new("snapctl")
-                .args(&["start", "--enable", "auto-cpufreq"])
-                .status()?;
-            
-            println!("\nauto-cpufreq daemon installed and started");
-        } else {
-            gnome_power_detect()?;
-            tlp_service_detect()?;
-            // gov_check()?;
-            
-            // Install daemon using appropriate init system
-            install_daemon()?;
-            
-            println!("\nauto-cpufreq daemon installed and started");
-            println!("\nTo view live stats, run:\nauto-cpufreq --stats");
-        }
-
+        gnome_power_detect()?;
+        tlp_service_detect()?;
+        
+        // Install daemon using appropriate init system
+        install_daemon()?;
+        
+        println!("\nauto-cpufreq daemon installed and started");
+        println!("\nTo view live stats, run:\nauto-cpufreq --stats");
+        
     } else if let Some(update_path) = args.update {
         root_check()?;
-        
         let _custom_dir = update_path.unwrap_or_else(|| "/opt/auto-cpufreq/source".to_string());
 
-        if *IS_INSTALLED_WITH_SNAP {
-            println!("\n{}\n", "=".repeat(80));
-            println!("Detected auto-cpufreq was installed using snap");
-            println!("Please update using snap package manager, i.e: `sudo snap refresh auto-cpufreq`.");
-            println!("\n{}\n", "=".repeat(80));
-        } else if *IS_INSTALLED_WITH_AUR {
+        if *IS_INSTALLED_WITH_AUR {
             println!("\n{}\n", "=".repeat(80));
             println!("Arch-based distribution with AUR support detected.");
             println!("Please refresh auto-cpufreq using your AUR helper.");
@@ -275,49 +253,27 @@ fn main() -> Result<()> {
                 println!("Update aborted");
             }
         }
-
+        
     } else if args.remove {
         root_check()?;
+        remove_daemon()?;
         
-        if *IS_INSTALLED_WITH_SNAP {
-            std::process::Command::new("snapctl")
-                .args(&["set", "daemon=disabled"])
-                .status()?;
-            
-            std::process::Command::new("snapctl")
-                .args(&["stop", "--disable", "auto-cpufreq"])
-                .status()?;
-
-            gnome_power_rm_reminder_snap();
-            
-            println!("\nauto-cpufreq daemon removed");
-        } else {
-            // Remove daemon using appropriate init system
-            remove_daemon()?;
-            
-            println!("\nauto-cpufreq daemon removed");
-        }
-
     } else if args.stats {
+        root_check()?;
+
         not_running_daemon_check()?;
         config_info_dialog();
         
-        if *IS_INSTALLED_WITH_SNAP {
-            gnome_power_detect_snap();
-            tlp_service_detect_snap();
-        } else {
-            gnome_power_detect()?;
-            tlp_service_detect()?;
-        }
+        gnome_power_detect()?;
+        tlp_service_detect()?;
 
-        if *IS_INSTALLED_WITH_SNAP || *TLP_STAT_EXISTS || 
-           (*SYSTEMCTL_EXISTS && gnome_power_status()?) {
+        if *TLP_STAT_EXISTS || (*SYSTEMCTL_EXISTS && gnome_power_status()?) {
             println!("press Enter to continue or Ctrl + C to exit...");
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
         }
 
-        let mut monitor = SystemMonitor::new(ViewType::Stats, false);
+        let mut monitor = SystemMonitor::new_with_verbose(ViewType::Stats, false, args.verbose);
         monitor.update();
         
         let rows = std::cmp::max(monitor.left.len(), monitor.right.len());
@@ -328,37 +284,25 @@ fn main() -> Result<()> {
             let right = monitor.right.get(i).cloned().unwrap_or_default();
             println!("{:<half$} │ {}", left, right, half=half);
         }
-
+        
     } else if args.get_state {
         not_running_daemon_check()?;
         let state = AutoCpuFreqState::new();
         let override_val = get_override(&state);
         println!("{}", override_val.to_str());
-
+        
     } else if args.bluetooth_boot_off {
-        if *IS_INSTALLED_WITH_SNAP {
-            footer(79);
-            bluetooth_notif_snap();
-            footer(79);
-        } else {
-            footer(79);
-            root_check()?;
-            bluetooth_disable()?;
-            footer(79);
-        }
-
+        footer(79);
+        root_check()?;
+        bluetooth_disable()?;
+        footer(79);
+        
     } else if args.bluetooth_boot_on {
-        if *IS_INSTALLED_WITH_SNAP {
-            footer(79);
-            bluetooth_on_notif_snap();
-            footer(79);
-        } else {
-            footer(79);
-            root_check()?;
-            bluetooth_enable()?;
-            footer(79);
-        }
-
+        footer(79);
+        root_check()?;
+        bluetooth_enable()?;
+        footer(79);
+        
     } else if args.debug {
         config_info_dialog();
         root_check()?;
@@ -370,28 +314,24 @@ fn main() -> Result<()> {
         println!();
         app_version();
         println!();
-        // python_info(); // TODO: implement if needed
-        println!();
-        // device_info(); // TODO: implement if needed
         println!("Battery is: {}charging", if charging()? { "" } else { "dis" });
         println!();
-        // app_res_use(); // TODO: implement if needed
         get_load();
         print_current_gov();
         get_turbo();
         footer(79);
-
+        
     } else if args.version {
         footer(79);
         distro_info()?;
         app_version();
         footer(79);
-
+        
     } else if args.donate {
         footer(79);
         println!("If auto-cpufreq helped you out and you find it useful ...\n");
         println!("Show your appreciation by donating!");
-        println!("https://github.com/AdnanHodzic/auto-cpufreq#donate");
+        println!("https://github.com/Zamanhuseyinli/auto-cpufreq#donate");
         footer(79);
     }
 

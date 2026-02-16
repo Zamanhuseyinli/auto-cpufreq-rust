@@ -7,14 +7,15 @@ use notify::event::{EventKind, ModifyKind, CreateKind, RemoveKind};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-// `ini` crate no longer exposes `Ini` at root; it's re-exported via configparser
 use configparser::ini::Ini;
 
 pub struct Config {
     path: Arc<Mutex<PathBuf>>,
     config: Arc<Mutex<Ini>>,
     watcher: Arc<Mutex<Option<notify::RecommendedWatcher>>>,
+    last_reload: Arc<Mutex<Instant>>,  // For debouncing
 }
 
 impl Config {
@@ -23,6 +24,7 @@ impl Config {
             path: Arc::new(Mutex::new(PathBuf::new())),
             config: Arc::new(Mutex::new(Ini::new())),
             watcher: Arc::new(Mutex::new(None)),
+            last_reload: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
@@ -40,9 +42,9 @@ impl Config {
     }
 
     fn setup_watcher(&self, path: &Path) -> Result<()> {
-        // annotate clone types to satisfy inference
-        let config_clone: Arc<Mutex<Ini>> = Arc::clone(&self.config);
+        let config_clone = Arc::clone(&self.config);
         let path_clone = Arc::clone(&self.path);
+        let last_reload_clone = Arc::clone(&self.last_reload);
 
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             match res {
@@ -55,16 +57,37 @@ impl Config {
                     );
 
                     if should_update {
+                        // Debouncing: Only reload if 500ms passed since last reload
+                        let should_reload = {
+                            let mut last = last_reload_clone.lock().unwrap();
+                            let now = Instant::now();
+                            if now.duration_since(*last) > Duration::from_millis(500) {
+                                *last = now;
+                                true
+                            } else {
+                                false
+                            }
+                        };
+
+                        if !should_reload {
+                            return;
+                        }
+
                         let current_path = path_clone.lock().unwrap().clone();
                         
                         // Check if the event is for our config file
                         for path in &event.paths {
                             if path == &current_path || 
                                path.with_extension("").with_extension("") == current_path.with_extension("").with_extension("") {
-                                // load a fresh Ini instance and replace if successful
+                                // Try to load config with proper error handling
                                 let mut new_config = Ini::new();
-                                if new_config.load(current_path.to_str().unwrap_or("")).is_ok() {
-                                    *config_clone.lock().unwrap() = new_config;
+                                if let Some(path_str) = current_path.to_str() {
+                                    if new_config.load(path_str).is_ok() {
+                                        // Only update if lock is available (avoid panic)
+                                        if let Ok(mut config) = config_clone.lock() {
+                                            *config = new_config;
+                                        }
+                                    }
                                 }
                                 break;
                             }
@@ -103,15 +126,15 @@ impl Config {
             }
             Err(e) => {
                 eprintln!("The following error occurred while parsing the config file:\n{}", e);
-                Ok(()) // Don't propagate the error, just log it
+                // Don't propagate error - allow program to continue with empty config
+                Ok(())
             }
         }
     }
 
     pub fn get_string(&self, section: &str, key: &str) -> Result<Option<String>> {
         let config = self.config.lock().unwrap();
-        Ok(config
-            .get(section, key))
+        Ok(config.get(section, key))
     }
 
     pub fn get_bool(&self, section: &str, key: &str) -> Result<bool> {
@@ -129,7 +152,12 @@ impl Config {
         let value = self.get_string(section, key)?;
         
         match value {
-            Some(s) => Ok(Some(s.parse()?)),
+            Some(s) => {
+                match s.parse() {
+                    Ok(v) => Ok(Some(v)),
+                    Err(e) => bail!("Failed to parse integer: {}", e),
+                }
+            }
             None => Ok(None),
         }
     }
@@ -144,7 +172,7 @@ impl Config {
         let value = self.get_int("battery", key)?;
         
         match value {
-            Some(v) if v >= 0 && v <= 100 => Ok(v as u8),
+            Some(v) if (0..=100).contains(&v) => Ok(v as u8),
             Some(v) => bail!("Threshold value out of range (0-100): {}", v),
             None => Ok(if mode == "start" { 0 } else { 100 }),
         }
@@ -171,6 +199,10 @@ impl Default for Config {
         Self::new()
     }
 }
+
+// Thread-safe implementation
+unsafe impl Send for Config {}
+unsafe impl Sync for Config {}
 
 // Global config instance
 lazy_static::lazy_static! {
@@ -259,5 +291,26 @@ mod tests {
         
         // Test with no config file (should return false)
         assert!(!config.get_bool("battery", "enable_thresholds").unwrap());
+    }
+
+    #[test]
+    fn test_thread_safety() {
+        use std::thread;
+        
+        let config = Config::new();
+        let config_arc = Arc::new(config);
+        
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let config_clone = Arc::clone(&config_arc);
+                thread::spawn(move || {
+                    let _ = config_clone.has_config();
+                })
+            })
+            .collect();
+        
+        for handle in handles {
+            handle.join().unwrap();
+        }
     }
 }

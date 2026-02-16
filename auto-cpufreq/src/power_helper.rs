@@ -4,8 +4,7 @@ use anyhow::{Result, Context};
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
-
-use crate::globals::{GITHUB, IS_INSTALLED_WITH_SNAP};
+use crate::core::GITHUB;
 use crate::tlp_stat_parser::TLPStatusParser;
 
 // Check if a command exists
@@ -41,10 +40,6 @@ pub fn footer() {
 
 // Detect if GNOME Power Profile service is running
 pub fn gnome_power_status() -> Result<bool> {
-    if *IS_INSTALLED_WITH_SNAP {
-        return Ok(false);
-    }
-
     if !*SYSTEMCTL_EXISTS {
         return Ok(false);
     }
@@ -81,14 +76,6 @@ pub fn tlp_service_detect() -> Result<()> {
     Ok(())
 }
 
-// Alert about TLP when using snap
-pub fn tlp_service_detect_snap() {
-    warning();
-    println!("Unable to detect if you are using a TLP service!");
-    println!("This daemon might interfere with auto-cpufreq which can lead to unexpected results.");
-    println!("We strongly encourage you not to use TLP unless you really know what you are doing.");
-}
-
 // Alert in case GNOME power profile service is running
 pub fn gnome_power_detect() -> Result<()> {
     if !*SYSTEMCTL_EXISTS {
@@ -101,7 +88,6 @@ pub fn gnome_power_detect() -> Result<()> {
         println!("\nThis daemon might interfere with auto-cpufreq and will be automatically");
         println!("disabled when auto-cpufreq daemon is installed and");
         println!("it will be re-enabled after auto-cpufreq is removed.");
-        println!("\nOnly necessary to be manually done on Snap package installs!");
         println!("Steps to perform this action using auto-cpufreq: power_helper script:");
         println!("git clone {}.git", GITHUB);
         println!("python3 -m auto_cpufreq.power_helper --gnome_power_disable");
@@ -128,19 +114,6 @@ pub fn gnome_power_detect_install() -> Result<()> {
     Ok(())
 }
 
-// Alert about snap
-pub fn gnome_power_detect_snap() {
-    warning();
-    println!("Due to Snap package confinement limitations please consider installing auto-cpufreq using");
-    println!("auto-cpufreq-installer: {}#auto-cpufreq-installer", GITHUB);
-    println!();
-    println!("Unable to detect state of GNOME Power Profiles daemon service!");
-    println!("This daemon might interfere with auto-cpufreq and should be disabled!");
-    println!("\nSteps to perform this action using auto-cpufreq: power_helper script:");
-    println!("git clone {}.git", GITHUB);
-    println!("python3 -m auto_cpufreq.power_helper --gnome_power_disable");
-    println!("\nReference: {}#configuring-auto-cpufreq", GITHUB);
-}
 
 // Stop GNOME >= 40 power profiles (live)
 pub fn gnome_power_stop_live() -> Result<()> {
@@ -315,11 +288,6 @@ pub fn set_bluetooth_auto_enable(value: bool) -> Result<bool> {
 
 // Disable bluetooth on boot
 pub fn bluetooth_disable() -> Result<()> {
-    if *IS_INSTALLED_WITH_SNAP {
-        bluetooth_notif_snap();
-        return Ok(());
-    }
-
     if !*BLUETOOTHCTL_EXISTS {
         println!("* Turn off bluetooth on boot [skipping] (package providing bluetooth access is not present)");
         return Ok(());
@@ -337,11 +305,6 @@ pub fn bluetooth_disable() -> Result<()> {
 
 // Enable bluetooth on boot
 pub fn bluetooth_enable() -> Result<()> {
-    if *IS_INSTALLED_WITH_SNAP {
-        bluetooth_on_notif_snap();
-        return Ok(());
-    }
-
     if !*BLUETOOTHCTL_EXISTS {
         println!("* Turn on bluetooth on boot [skipping] (package providing bluetooth access is not present)");
         return Ok(());
@@ -356,21 +319,6 @@ pub fn bluetooth_enable() -> Result<()> {
     Ok(())
 }
 
-// Turn off bluetooth on snap message
-pub fn bluetooth_notif_snap() {
-    println!("\n* Unable to turn off bluetooth on boot due to Snap package restrictions!");
-    println!("\nSteps to perform this action using auto-cpufreq: power_helper script:");
-    println!("python3 -m auto_cpufreq.power_helper --bluetooth_boot_off");
-    println!("\nFor help see: https://github.com/AdnanHodzic/auto-cpufreq/#1-power_helperpy-script-snap-package-install-only");
-}
-
-// Turn on bluetooth on snap message
-pub fn bluetooth_on_notif_snap() {
-    println!("\n* Unable to turn on bluetooth on boot due to Snap package restrictions!");
-    println!("\nSteps to perform this action using auto-cpufreq: power_helper script:");
-    println!("python3 -m auto_cpufreq.power_helper --bluetooth_boot_on");
-    println!("\nFor help see: https://github.com/AdnanHodzic/auto-cpufreq/#1-power_helperpy-script-snap-package-install-only");
-}
 
 // GNOME power removal reminder
 pub fn gnome_power_rm_reminder() -> Result<()> {
@@ -387,13 +335,3 @@ pub fn gnome_power_rm_reminder() -> Result<()> {
     Ok(())
 }
 
-// GNOME power removal reminder for snap
-pub fn gnome_power_rm_reminder_snap() {
-    warning();
-    println!("Unable to detect state of GNOME Power Profiles daemon service!");
-    println!("Now it's recommended to enable this service.");
-    println!("\nSteps to perform this action using auto-cpufreq: power_helper script:");
-    println!("git clone {}.git", GITHUB);
-    println!("python3 -m auto_cpufreq.power_helper --gnome_power_enable");
-    println!("\nReference: {}#configuring-auto-cpufreq", GITHUB);
-}

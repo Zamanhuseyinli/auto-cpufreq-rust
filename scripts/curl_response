@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azccriminal</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&display=swap" rel="stylesheet">
+<link rel="icon" href="https://azccriminal.space/azccriminal.jpg">
+<style>
+body {
+  margin:0;
+  font-family:'Orbitron',sans-serif;
+  background:#01091f;
+  overflow-x:hidden;
+  overflow-y:auto;
+  cursor:none;
+}
+
+/* Navbar */
+.navbar { 
+  position:fixed; top:0; left:-100%; width:25%; max-width:300px; height:100%; 
+  background:rgba(1,9,31,0.97); display:flex; flex-direction:column; 
+  padding:30px; z-index:10; border-right:1px solid #003366; 
+  transition:left 1.2s cubic-bezier(0.77, 0, 0.175, 1);
+  overflow-y:auto; 
+}
+.navbar.active{left:0;}
+.navbar a{
+  color:#00c8ff;
+  text-decoration:none;
+  margin:18px 0;
+  font-size:18px;
+  transition: color 0.3s ease, transform 0.3s ease;
+}
+.navbar a:hover{color:#66e0ff; transform:translateX(8px);}
+.navbar-toggle{
+  position:fixed;top:20px;left:20px;width:40px;height:40px;
+  background:#00c8ff;border:none;border-radius:8px;cursor:pointer;
+  z-index:20;color:#01091f;font-weight:bold;font-size:20px;
+  transition: transform 0.2s ease, background 0.3s;
+}
+.navbar-toggle:hover{background:#66e0ff;transform:scale(1.1);}
+/* Social Media */
+.social-icons {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+  z-index: 15;
+}
+.social-icons a {
+  width: 32px; height:32px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:16px; color:#00c8ff; text-decoration:none;
+  transition: transform 0.3s ease, color 0.3s ease;
+}
+.social-icons a:hover { color:#66e0ff; transform:scale(1.3); }
+
+
+/* Canvas */
+canvas#bgCanvas{position:absolute;top:0;left:0;width:100%;height:100%;z-index:0;display:block;}
+
+/* Cybernetic cursor */
+.cursor {
+  position: fixed;
+  top: 0; left:0;
+  width: 20px; height:20px;
+  border: 2px solid #00FFFF;
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  transition: transform 0.1s ease, background-color 0.2s ease;
+  z-index: 1000;
+}
+.cursor.active {
+  transform: translate(-50%, -50%) scale(1.5);
+  background-color: #FF00FF;
+  border-color: #FF00FF;
+}
+/* Responsive */
+@media screen and (max-width:768px){
+  .navbar { width:70%; padding:20px; }
+  .navbar a{font-size:14px; margin:10px 0;}
+  .navbar-toggle { width:36px; height:36px; font-size:18px; }
+  .social-icons a { width:28px; height:28px; }
+  .cursor { display:none; } 
+</style>
+</head>
+<body>
+
+<!-- Navbar -->
+<div class="navbar" id="navbar">
+  <a href="/">Home</a>
+  <a href="about.html">About</a>
+  <a href="https://wiki.azccriminal.space">Wiki</a>
+  <a href="services.html">Services</a>
+  <a href="contact.html">Contact</a>
+  <a href="donate.html">Donate</a>
+  <a href="books.html">Books</a>
+  <a href="privacy-policy.html">Privacy Policy</a>
+  <a href="term-of-service.html">Term of Service</a>
+</div>
+<button class="navbar-toggle" id="navToggle">☰</button>
+
+<!-- Social Icons -->
+<div class="social-icons">
+  <a href="https://x.com/Azccriminal" target="_blank"><img src="https://x.com/favicon.ico" alt="X"></a>
+  <a href="https://mastodon.social/@Azccriminal" target="_blank"><img src="https://mastodon.social/packs/assets/favicon-32x32-CiQz7Niw.png" alt="M"></a>
+  <a href="https://matrix.to/#/#azccriminal:matrix.org" target="_blank"><img src="https://matrix.org/assets/favicon.ico" alt="X"></a>
+  <a href="https://www.reddit.com/r/azccriminal/" target="_blank"><img src="https://www.reddit.com/favicon.ico" alt="R"></a>
+</div>
+
+<!-- Canvas -->
+<canvas id="bgCanvas"></canvas>
+
+<!-- Cybernetic cursor -->
+<div class="cursor" id="cursor"></div>
+
+<script>
+// Navbar toggle
+const navbar=document.getElementById('navbar');
+const navToggle=document.getElementById('navToggle');
+navToggle.addEventListener('click',()=>navbar.classList.toggle('active'));
+
+// Canvas setup
+const canvas=document.getElementById('bgCanvas');
+const ctx=canvas.getContext('2d');
+let w=canvas.width=window.innerWidth;
+let h=canvas.height=window.innerHeight;
+
+// Particle class
+class Particle{
+  constructor(x,y,target=false,isIcon=false){
+    this.x=x||Math.random()*w;
+    this.y=y||Math.random()*h;
+    this.baseX=this.x; this.baseY=this.y;
+    this.vx=(Math.random()-0.5)*0.3;
+    this.vy=(Math.random()-0.5)*0.3;
+    this.radius=2;
+    this.target=target;
+    this.alpha=Math.random()*0.5+0.5;
+    this.isIcon=isIcon;
+  }
+  update(){
+    if(this.target){
+      this.x+=(this.baseX-this.x)*0.08+(Math.random()-0.5)*0.2;
+      this.y+=(this.baseY-this.y)*0.08+(Math.random()-0.5)*0.2;
+    } else {
+      this.x+=this.vx; this.y+=this.vy;
+      if(this.x<0)this.x=w;
+      if(this.x>w)this.x=0;
+      if(this.y<0)this.y=h;
+      if(this.y>h)this.y=0;
+    }
+  }
+  draw(){
+    ctx.beginPath();
+    ctx.arc(this.x,this.y,this.radius,0,Math.PI*2);
+    if(this.isIcon){
+      ctx.fillStyle=`rgba(255,255,0,${this.alpha})`;
+      ctx.shadowColor='#ffff66';
+      ctx.shadowBlur=8;
+    } else {
+      ctx.fillStyle=`rgba(0,200,255,${this.alpha})`;
+      ctx.shadowColor='#00c8ff';
+      ctx.shadowBlur=5;
+    }
+    ctx.fill();
+  }
+}
+
+// Particle arrays
+const particles=[]; 
+let textParticles=[];
+
+// Determine if mobile
+const isMobile = /Mobi|Android/i.test(navigator.userAgent);
+
+// Spawn text particles
+function spawnTextParticles(){
+  textParticles.forEach(p=>particles.splice(particles.indexOf(p),1));
+  textParticles=[];
+  const offCanvas=document.createElement('canvas');
+  offCanvas.width=w; offCanvas.height=h;
+  const offCtx=offCanvas.getContext('2d');
+
+  // Mobilde font boyutunu küçült
+  offCtx.font = isMobile ? '60px Orbitron' : '120px Orbitron';
+  offCtx.fillStyle='white';
+  offCtx.textAlign='center';
+  offCtx.textBaseline='middle';
+  offCtx.fillText('Azccriminal', w/2, h/2);
+
+  const data=offCtx.getImageData(0,0,w,h).data;
+  const step = isMobile ? 6 : 8; // mobilde particle daha yoğun
+  for(let y=0;y<h;y+=step){
+    for(let x=0;x<w;x+=step){
+      const index=(y*w+x)*4;
+      if(data[index+3]>128){
+        const p=new Particle(x,y,true);
+        particles.push(p);
+        textParticles.push(p);
+      }
+    }
+  }
+}
+
+// Initialize
+document.fonts.ready.then(()=>spawnTextParticles());
+
+// Particle spawn based on device
+const initialParticles = isMobile ? 70 : 100;
+for(let i=0;i<initialParticles;i++) particles.push(new Particle());
+
+// Social icon particles
+function spawnIconParticles(){
+  const icons=document.querySelectorAll('.social-icons img');
+  icons.forEach(icon=>{
+    const rect=icon.getBoundingClientRect();
+    for(let i=0;i<8;i++){
+      const p=new Particle(
+        rect.left + rect.width/2 + (Math.random()-0.5)*10,
+        rect.top + rect.height/2 + (Math.random()-0.5)*10,
+        true,
+        true
+      );
+      particles.push(p);
+    }
+  });
+}
+spawnIconParticles();
+
+// Animate
+function animate(){
+  ctx.clearRect(0,0,w,h);
+  particles.forEach(p=>{p.update(); p.draw();});
+  requestAnimationFrame(animate);
+}
+animate();
+
+// Resize
+window.addEventListener('resize',()=>{
+  w=canvas.width=window.innerWidth;
+  h=canvas.height=window.innerHeight;
+  spawnTextParticles();
+  spawnIconParticles();
+});
+
+// Click to explode text particles
+canvas.addEventListener('click',()=>{
+  textParticles.forEach(p=>{
+    p.vx=(Math.random()-0.5)*5;
+    p.vy=(Math.random()-0.5)*5;
+    p.target=false;
+  });
+  setTimeout(spawnTextParticles,300);
+});
+
+// Cybernetic cursor
+const cursor=document.getElementById('cursor');
+if(!isMobile){
+  document.addEventListener('mousemove',e=>{
+    cursor.style.left=`${e.pageX}px`;
+    cursor.style.top=`${e.pageY}px`;
+  });
+  document.addEventListener('mousedown',()=>{cursor.classList.add('active');});
+  document.addEventListener('mouseup',()=>{cursor.classList.remove('active');});
+}
+</script>
+
+</body>
+</html>

@@ -126,7 +126,6 @@ impl SystemInfo {
             .map(|khl| khl / 1000.0)
     }
 
-    /// Read CPU core temperature from hwmon sensors
     fn read_cpu_temperature(core_id: usize) -> f32 {
         let sensor_priority = ["coretemp", "k10temp", "zenpower", "acpitz"];
         let hwmon_path = "/sys/class/hwmon";
@@ -140,11 +139,10 @@ impl SystemInfo {
                     let sensor_name = sensor_name.trim();
                     
                     if sensor_priority.contains(&sensor_name) {
-                        // For coretemp: temp1 = Package, temp2+ = cores
-                        // Try temp{core_id + 2}_input first, then iterate
                         let preferred_temp_id = core_id + 2;
+                        let max_temp_id = std::cmp::min(core_id + 10, 20);
                         
-                        for temp_id in preferred_temp_id..20 {
+                        for temp_id in preferred_temp_id..max_temp_id {
                             let temp_file = path.join(format!("temp{}_input", temp_id));
                             
                             if temp_file.exists() {
@@ -170,10 +168,12 @@ impl SystemInfo {
         
         0.0
     }
-
     // System nesnesini parametre olarak alıyoruz
-    pub fn get_cpu_info(sys: &mut System) -> Vec<CoreInfo> {
-        sys.refresh_cpu();  // Her çağrıda refresh yapıyoruz
+   pub fn get_cpu_info(sys: &mut System) -> Vec<CoreInfo> {
+        // CRITICAL: Refresh CPU before reading
+        sys.refresh_cpu();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_cpu();
 
         let cpus = sys.cpus();
         let mut cores = Vec::new();
@@ -193,7 +193,6 @@ impl SystemInfo {
 
         cores
     }
-
     pub fn cpu_fan_speed() -> Option<i32> {
         // Try to read fan speed from hwmon
         let hwmon_path = "/sys/class/hwmon";
@@ -243,8 +242,11 @@ impl SystemInfo {
     }
 
     // System nesnesini parametre olarak alıyoruz
-    pub fn cpu_usage(sys: &mut System) -> f32 {
-        sys.refresh_cpu();  // Her çağrıda refresh yapıyoruz
+  pub fn cpu_usage(sys: &mut System) -> f32 {
+        // CRITICAL: Refresh CPU before reading
+        sys.refresh_cpu();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_cpu();
         
         let cpus = sys.cpus();
         if cpus.is_empty() {
@@ -430,7 +432,12 @@ impl SystemInfo {
     }
 
     // System nesnesini parametre olarak alıyoruz
-    pub fn generate_system_report(&self, sys: &mut System) -> SystemReport {
+  pub fn generate_system_report(&self, sys: &mut System) -> SystemReport {
+        // CRITICAL: Ensure CPU is properly refreshed before generating report
+        sys.refresh_cpu();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_cpu();
+        
         let battery = Self::battery_info();
         let cores = Self::get_cpu_info(sys);
 
@@ -457,7 +464,6 @@ impl SystemInfo {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

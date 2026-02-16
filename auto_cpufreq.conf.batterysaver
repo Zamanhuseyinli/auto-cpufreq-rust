@@ -1,0 +1,20 @@
+# auto-cpufreq configuration - Maximum Battery Life
+# Optimized for: Long battery life, light tasks, travel
+
+[charger]
+# Even when plugged in, save power
+governor = powersave
+turbo = auto
+energy_performance_preference = balance_power
+
+[battery]
+# Aggressive power saving
+governor = powersave
+turbo = never
+energy_performance_preference = power
+scaling_max_freq = 1800000
+
+# Enable charging thresholds to extend battery lifespan
+enable_thresholds = true
+charging_start_threshold = 20
+charging_stop_threshold = 80
