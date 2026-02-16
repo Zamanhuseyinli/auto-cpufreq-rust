@@ -2,9 +2,12 @@
 name = "auto-cpufreq"
 version = "3.0.0-rust2"
 edition = "2021"
-
-[lib]
-path = "src/lib.rs"
+authors = ["Zamanhuseyinli <zamanhuseynli23@gmail.com>>", "Contributors"]
+description = "Automatic CPU speed & power optimizer for Linux"
+license = "LGPL-3.0"
+repository = "https://github.com/Zamanhuseyinli/auto-cpufreq-rust"
+keywords = ["cpu", "power", "optimization", "linux", "daemon"]
+categories = ["command-line-utilities", "hardware-support"]
 
 [[bin]]
 name = "auto-cpufreq"
@@ -19,6 +22,10 @@ required-features = ["gui"]
 name = "auto-cpufreq-tray"
 path = "src/bin/auto_cpufreq_tray.rs"
 required-features = ["gui"]
+
+[lib]
+name = "auto_cpufreq"
+path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1.0"
@@ -47,5 +54,27 @@ default = []
 gui = ["gtk", "gdk", "gdk-pixbuf", "glib", "gio"]
 
 [profile.release]
+opt-level = 3
+lto = "fat"                # Full Link-Time Optimization
+codegen-units = 1          # Better optimization (slower compile)
+strip = true               # Strip symbols from binary
+panic = "abort"            # Smaller binary, faster panics
+overflow-checks = false    # Disable overflow checks in release
+
+[profile.release-size]
+inherits = "release"
+opt-level = "z"            # Optimize for size
 lto = true
 codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
+overflow-checks = true
+
+[profile.release.package."*"]
+opt-level = 3
+codegen-units = 1
+
+

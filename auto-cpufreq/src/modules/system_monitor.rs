@@ -315,39 +315,34 @@ impl SystemMonitor {
     }
 
     /// Simple blocking run that prints the formatted columns to stdout every 2s.
-    pub fn run_blocking(&mut self) {
+  pub fn run_blocking(&mut self) {
         loop {
             self.update();
-            
+
             // Clear screen
             print!("\x1B[2J\x1B[1;1H");
-            
-            let width = 80usize;
-            let half = width / 2 - 1;
+
+            // OPTIMIZATION: Daha geniş ekran - 100 karakter
+            let width = 100usize;
+            let half = width / 2 - 2;
             let rows = std::cmp::max(self.left.len(), self.right.len());
-            
+
             for i in 0..rows {
-                let left = self.left.get(i).cloned().unwrap_or_default();
-                let right = self.right.get(i).cloned().unwrap_or_default();
-                
-                // OPTIMIZED: More efficient truncation
-                let left_truncated = if left.len() > half {
-                    let mut s = String::with_capacity(half);
-                    s.push_str(&left[..half-3]);
-                    s.push_str("...");
-                    s
+                let left = self.left.get(i).map(String::as_str).unwrap_or("");
+                let right = self.right.get(i).map(String::as_str).unwrap_or("");
+
+                if left.len() > half {
+                    let truncate_at = half.saturating_sub(3);
+                    print!("{:<half$}... │ {}\n", &left[..truncate_at], right, half=half);
                 } else {
-                    left
-                };
-                
-                println!("{:<half$} │ {}", left_truncated, right, half=half);
+                    println!("{:<half$} │ {}", left, right, half=half);
+                }
             }
-            
+
             thread::sleep(Duration::from_secs(2));
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
