@@ -331,7 +331,7 @@ fn main() -> Result<()> {
         footer(79);
         println!("If auto-cpufreq helped you out and you find it useful ...\n");
         println!("Show your appreciation by donating!");
-        println!("https://github.com/Zamanhuseyinli/auto-cpufreq#donate");
+        println!("https://github.com/Zamanhuseyinli/auto-cpufreq-rust#donate");
         footer(79);
     }
 

@@ -15,7 +15,7 @@ pub const ALL_GOVERNORS: &[&str] = &[
 pub const CONSERVATION_MODE_FILE: &str = 
     "/sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/conservation_mode";
 
-pub const GITHUB: &str = "https://github.com/AdnanHodzic/auto-cpufreq";
+pub const GITHUB: &str = "https://github.com/Zamanhuseyinli/auto-cpufreq-rust";
 
 pub const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply/";
 

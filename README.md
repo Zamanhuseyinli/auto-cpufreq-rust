@@ -4,36 +4,6 @@
 
 Automatic CPU speed & power optimizer for Linux. Actively monitors laptop battery state, CPU usage, CPU temperature, and system load, ultimately allowing you to improve battery life without making any compromises.
 
-For tl;dr folks:
-
-* Youtube: 
-[From 10 day vacation project to 100k users: auto-cpufreq v3 story](https://www.youtube.com/watch?v=VKqNjczvI88)
-* Blog post: [From 10 day vacation project to 100k users: auto-cpufreq v3 story](https://foolcontrol.org/?p=5114)
-
-[![](https://img.youtube.com/vi/VKqNjczvI88/0.jpg)](https://www.youtube.com/watch?v=VKqNjczvI88)
-
-* Youtube: [auto-cpufreq v2.0 release & demo of all available features and options](https://www.youtube.com/watch?v=SPGpkZ0AZVU)
-* Blog post: [auto-cpufreq v2.0](https://foolcontrol.org/?p=4603)
-
-[![](https://img.youtube.com/vi/SPGpkZ0AZVU/0.jpg)](https://www.youtube.com/watch?v=QkYRpVEEIlg)
-
-* Youtube: [auto-cpufreq - tool demo](https://www.youtube.com/watch?v=QkYRpVEEIlg)
-* Blog post: [auto-cpufreq – Automatic CPU speed & power optimizer for Linux](https://foolcontrol.org/?p=3124)
-
-[![](https://img.youtube.com/vi/QkYRpVEEIlg/0.jpg)](https://www.youtube.com/watch?v=QkYRpVEEIlg)
-
-If you're having a problem with auto-cpufreq, before ([submitting an issue](https://github.com/AdnanHodzic/auto-cpufreq/issues)), it is strongly recommended to use the **[auto-cpufreq-genAI-chatbot](https://foolcontrol.org/?p=4903)** to get an immediate answer to your question.
-
-[![](https://img.youtube.com/vi/a-UcwAAXOoc/0.jpg)](https://www.youtube.com/watch?v=a-UcwAAXOoc)
-
-Example of auto-cpufreq GUI (available >= v2.0)
-
-<img src="https://github.com/user-attachments/assets/3e33bd92-964c-48f0-9825-4a66f9039261" width="480" alt="Example of auto-cpufreq GUI (available >= v2.0)" />
-
-Example of `auto-cpufreq --stats` CLI output
-
-<img src="https://github.com/user-attachments/assets/1114e937-35bd-4943-8a74-a932c04c367e" width="480" alt="Example of auto-cpufreq CLI output"/>
-
 ## Looking for developers and co-maintainers
 
 - If you would like to discuss anything regarding auto-cpufreq or its development, please join the [auto-cpufreq Discord server!](https://discord.gg/Sjauxtj6kH)
@@ -124,8 +94,8 @@ Only devices with an Intel, AMD, or ARM CPU are supported. This tool was develop
 Get source code, run installer, and follow on-screen instructions:
 
 ```
-git clone https://github.com/Zamanhuseyinli/auto-cpufreq.git
-cd auto-cpufreq && sudo ./auto-cpufreq-installer
+git clone https://github.com/Zamanhuseyinli/auto-cpufreq-rust.git
+cd auto-cpufreq-rust && sudo ./auto-cpufreq-installer
 ```
 
 
@@ -134,12 +104,10 @@ cd auto-cpufreq && sudo ./auto-cpufreq-installer
 w### AUR package (Arch based distributions)
 
 [![AUR package](https://repology.org/badge/version-for-repo/aur/auto-cpufreq.svg)](https://aur.archlinux.org/packages/auto-cpufreq-rust-git)
-
-The AUR [Release Package](https://aur.archlinux.org/packages/auto-cpufreq-git) is currently being maintained by [MusicalArtist12](https://github.com/MusicalArtist12), [liljaylj](https://github.com/liljaylj), and [parmjotsinghrobot](https://github.com/parmjotsinghrobot). 
-
+Is Maintaner [Zamanhuseyinli](https://github.com/Zamanhuseyinli)
 **Notices**
 
-- The [Git Package](https://aur.archlinux.org/packages/auto-cpufreq-git) is seperately maintained and was last updated on version 1.9.6. 
+- The [Git Package](https://aur.archlinux.org/packages/auto-cpufreq-rust-git) is seperately maintained and was last updated on version 1.9.6. 
 - The build process links to `/usr/share/` instead of `/usr/local/share/`
 - The daemon installer provided does not work, instead start the daemon with 
 
@@ -187,7 +155,7 @@ This repo contains a flake that exposes a NixOS Module that manages and offers o
     inputs = {
         # ---Snip---
         auto-cpufreq = {
-            url = "github:Zamanhuseyinli/auto-cpufreq";
+            url = "github:Zamanhuseyinli/auto-cpufreq-rust";
             inputs.nixpkgs.follows = "nixpkgs";
         };
         # ---Snip---
@@ -250,8 +218,8 @@ services.auto-cpufreq.enable = true;
 
 - If you have `cargo` installed:
   ```bash
-  git clone https://github.com/Zamanhuseyinli/auto-cpufreq.git
-  cd auto-cpufreq/auto-cpufreq
+  git clone https://github.com/Zamanhuseyinli/auto-cpufreq-rust.git
+  cd auto-cpufreq-rust/auto-cpufreq
   cargo build --release
   cargo run --bin auto-cpufreq -- --help
   ```
@@ -264,8 +232,8 @@ services.auto-cpufreq.enable = true;
 
 - Alternatively, we can use an editable pip install for development purposes:
   ```bash
-  git clone https://github.com/Zamanhuseyinli/auto-cpufreq.git
-  cd auto-cpufreq
+  git clone https://github.com/Zamanhuseyinli/auto-cpufreq-rust.git
+  cd auto-cpufreq-rust
   cargo build
   target/debug/auto-cpufreq
   ```
@@ -273,7 +241,7 @@ services.auto-cpufreq.enable = true;
 
 ## Post-installation
 
-After installation, `auto-cpufreq` is available as a binary. Refer to [auto-cpufreq modes and options](https://github.com/Zamanhuseyinli/auto-cpufreq#auto-cpufreq-modes-and-options) for detailed information on how to run and configure `auto-cpufreq`.
+After installation, `auto-cpufreq` is available as a binary. Refer to [auto-cpufreq modes and options](https://github.com/Zamanhuseyinli/auto-cpufreq-rust#auto-cpufreq-modes-and-options) for detailed information on how to run and configure `auto-cpufreq`.
 
 ## Configuring auto-cpufreq
 
@@ -387,7 +355,7 @@ energy_performance_preference = power
 turbo = auto
 
 # battery charging threshold
-# reference: https://github.com/AdnanHodzic/auto-cpufreq/#battery-charging-thresholds
+# reference: https://github.com/Zamanhuseyinli/auto-cpufreq-rust/#battery-charging-thresholds
 #enable_thresholds = true
 #start_threshold = 20
 #stop_threshold = 80
@@ -511,7 +479,7 @@ Since the daemon is running as a systemd service, its status can be seen by runn
 
 ### Update - auto-cpufreq update
 
-Update functionality works by cloning the auto-cpufreq repo, installing it via [auto-cpufreq-installer](#auto-cpufreq-installer), and performing a fresh [auto-cpufreq daemon install](#install---auto-cpufreq-daemon) to provide the [latest version's](https://github.com/AdnanHodzic/auto-cpufreq/releases) changes.
+Update functionality works by cloning the auto-cpufreq repo, installing it via [auto-cpufreq-installer](#auto-cpufreq-installer), and performing a fresh [auto-cpufreq daemon install](#install---auto-cpufreq-daemon) to provide the [latest version's](https://github.com/Zamanhuseyinli/auto-cpufreq-rust/releases) changes.
 
 Update auto-cpufreq by running: `sudo auto-cpufreq --update`. By default, the latest revision is cloned to `/opt/auto-cpufreq/source`, thus maintaining existing directory structure.
 
@@ -545,9 +513,8 @@ Useful if you prefer Bluetooth to be enabled at boot time, especially after inst
 
 ## Battery charging thresholds
 
-***Please note:** [Original implementor](https://github.com/AdnanHodzic/auto-cpufreq/pull/637) is looking for user input & testing to further improve this functionality. If you would like to help in this process, please refer to [Looking for developers and co-maintainers](https://github.com/AdnanHodzic/auto-cpufreq/#looking-for-developers-and-co-maintainers)*.
-
 As of [v2.2.0](https://github.com/AdnanHodzic/auto-cpufreq/releases/tag/v2.2.0), battery charging thresholds can be set in the config file. This enforces your battery to start and stop charging at defined values.
+It has been adapted in the same way; the basic features are technically the same, but the usage is slightly different.
 
 ### Supported devices
 
@@ -557,7 +524,7 @@ As of [v2.2.0](https://github.com/AdnanHodzic/auto-cpufreq/releases/tag/v2.2.0),
 
 ***Please note, your laptop must have an installed ACPI kernel driver specific to the manufacturer.** To check if you have the correct module installed and loaded run `lsmod [module]`
 
-**To request that your device be supported, please open an [issue](https://github.com/AdnanHodzic/auto-cpufreq/issues/new). In your issue, make us aware of the driver that works with your laptop**
+**To request that your device be supported, please open an [issue](https://github.com/Zamanhuseyinli/auto-cpufreq-rust/issues/new). In your issue, make us aware of the driver that works with your laptop**
 
 ### Battery config
 Edit the config at `/etc/auto-cpufreq.conf`
@@ -723,7 +690,7 @@ If auto-cpufreq helped you out and you find it useful, show your appreciation by
 
 ### Code contribution
 
-Other ways of supporting the project consist of making a code or documentation contribution. If you have an idea for a new feature or you want to implement some of the existing feature requests or fix some of the [bugs & issues](https://github.com/AdnanHodzic/auto-cpufreq/issues), please make your changes and submit a [pull request](https://github.com/AdnanHodzic/auto-cpufreq/pulls). I'll be glad to review it and, if your changes are accepted, you'll be credited on the [releases page](https://github.com/AdnanHodzic/auto-cpufreq/releases).
+Other ways of supporting the project consist of making a code or documentation contribution. If you have an idea for a new feature or you want to implement some of the existing feature requests or fix some of the [bugs & issues](https://github.com/AdnanHodzic/auto-cpufreq/issues), please make your changes and submit a [pull request](https://github.com/AdnanHodzic/auto-cpufreq/pulls). I'll be glad to review it and, if your changes are accepted, you'll be credited on the [releases page](https://github.com/Zamanhuseyinli/auto-cpufreq-rust/releases).
 
 **Please note: auto-cpufreq is looking for co-maintainers & open source developers to [help shape the future of the project!](https://github.com/AdnanHodzic/auto-cpufreq/discussions/312)**
 **Rust is rewritten to [Zamanhuseyinli](https://github.com/Zamanhuseyinli)**

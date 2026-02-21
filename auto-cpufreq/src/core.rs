@@ -158,7 +158,7 @@ lazy_static::lazy_static! {
 // ============================================================================
 const SCRIPTS_DIR: &str = "/usr/local/share/auto-cpufreq/scripts/";
 const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply/";
-pub const GITHUB: &str = "https://github.com/Zamanhuseyinli/auto-cpufreq";
+pub const GITHUB: &str = "https://github.com/Zamanhuseyinli/auto-cpufreq-rust";
 
 pub const ALL_GOVERNORS: &[&str] = &[
     "performance", 
@@ -1064,7 +1064,7 @@ pub fn install_daemon() -> Result<()> {
         "s6" => install_s6(),
         _ => {
             println!("\n* Unsupported init system detected, could not install the daemon\n");
-            println!("* Please open an issue on https://github.com/AdnanHodzic/auto-cpufreq\n");
+            println!("* Please open an issue on https://github.com/Zamanhuseyinli/auto-cpufreq-rust\n");
             bail!("Unsupported init system: {}", init)
         }
     }
@@ -1085,7 +1085,7 @@ pub fn remove_daemon() -> Result<()> {
         "s6" => remove_s6(),
         _ => {
             println!("\n* Unsupported init system detected, could not remove the daemon");
-            println!("* Please open an issue on https://github.com/AdnanHodzic/auto-cpufreq\n");
+            println!("* Please open an issue on https://github.com/Zamanhuseyinli/auto-cpufreq-rust\n");
             bail!("Unsupported init system: {}", init)
         }
     };
@@ -1250,7 +1250,7 @@ fn install_runit() -> Result<()> {
             "artix" => ("/etc/runit", "/run/runit"),
             _ => {
                 println!("\n* Runit init detected but your distro is not supported\n");
-                println!("* Please open an issue on https://github.com/AdnanHodzic/auto-cpufreq\n");
+                println!("* Please open an issue on https://github.com/Zamanhuseyinli/auto-cpufreq-rust\n");
                 bail!("Unsupported runit distro: {}", distro_id);
             }
         }
