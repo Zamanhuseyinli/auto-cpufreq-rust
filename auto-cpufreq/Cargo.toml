@@ -1,13 +1,14 @@
 [package]
 name = "auto-cpufreq"
-version = "3.0.0-rust2"
+version = "3.0.1"
 edition = "2021"
-authors = ["Zamanhuseyinli <zamanhuseynli23@gmail.com>>", "Contributors"]
+authors = ["Zamanhuseyinli <zamanhuseynli23@gmail.com>", "Contributors"]
 description = "Automatic CPU speed & power optimizer for Linux"
 license = "LGPL-3.0"
 repository = "https://github.com/Zamanhuseyinli/auto-cpufreq-rust"
 keywords = ["cpu", "power", "optimization", "linux", "daemon"]
 categories = ["command-line-utilities", "hardware-support"]
+readme = "README.md"
 
 [[bin]]
 name = "auto-cpufreq"
