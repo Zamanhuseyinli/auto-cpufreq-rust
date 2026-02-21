@@ -8,7 +8,7 @@ license = "LGPL-3.0"
 repository = "https://github.com/Zamanhuseyinli/auto-cpufreq-rust"
 keywords = ["cpu", "power", "optimization", "linux", "daemon"]
 categories = ["command-line-utilities", "hardware-support"]
-readme = "README.md"
+readme = "../README.md"
 
 [[bin]]
 name = "auto-cpufreq"
